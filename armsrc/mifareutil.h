@@ -68,42 +68,62 @@
 #endif
 
 //functions
-uint16_t mifare_sendcmd(uint8_t cmd, uint8_t *data, uint8_t data_size, uint8_t *answer, uint8_t *answer_parity, uint32_t *timing);
-uint16_t mifare_sendcmd_short(struct Crypto1State *pcs, uint8_t crypted, uint8_t cmd, uint8_t data, uint8_t *answer, uint8_t *answer_parity, uint32_t *timing);
+uint16_t mifare_sendcmd(uint8_t cmd, uint8_t *data, uint8_t data_size, uint8_t *answer, size_t answer_size, uint8_t *answer_parity, size_t answer_parity_size, uint32_t *timing);
+uint16_t mifare_sendcmd_short(struct Crypto1State *pcs, uint8_t crypted, uint8_t cmd, uint8_t data, uint8_t *answer, size_t answer_size, uint8_t *answer_parity, size_t answer_parity_size, uint32_t *timing);
 
 // mifare classic
 int mifare_classic_auth(struct Crypto1State *pcs, uint32_t uid, uint8_t blockNo, uint8_t keyType, uint64_t ui64Key, uint8_t isNested);
 int mifare_classic_authex(struct Crypto1State *pcs, uint32_t uid, uint8_t blockNo, uint8_t keyType, uint64_t ui64Key, uint8_t isNested, uint32_t *ntptr, uint32_t *timing);
 int mifare_classic_authex_cmd(struct Crypto1State *pcs, uint32_t uid, uint8_t blockNo, uint8_t cmd, uint64_t ui64Key, uint8_t isNested, uint32_t *ntptr, uint32_t *ntencptr, uint32_t *timing);
 
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_classic_readblock(struct Crypto1State *pcs, uint8_t blockNo, uint8_t *blockData);
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_classic_readblock_ex(struct Crypto1State *pcs, uint8_t blockNo, uint8_t *blockData, uint8_t iso_byte);
 
 int mifare_classic_halt(struct Crypto1State *pcs);
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_classic_writeblock(struct Crypto1State *pcs, uint8_t blockNo, uint8_t *blockData);
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_classic_writeblock_ex(struct Crypto1State *pcs, uint8_t blockNo, uint8_t *blockData, uint8_t cmd);
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_classic_value(struct Crypto1State *pcs, uint8_t blockNo, uint8_t *blockData, uint8_t action);
 
 // Ultralight/NTAG...
+
+// 'keybytes' is presumed to be a buffer of at least 4 bytes
+// 'pack' is presumed to be a buffer of at least 4 bytes
 int mifare_ul_ev1_auth(uint8_t *keybytes, uint8_t *pack);
+// 'keybytes' is presumed to be a buffer of at least 16 bytes
 int mifare_ultra_auth(uint8_t *keybytes);
+// 'keybytes' is presumed to be a buffer of at least 16 bytes
 int mifare_ultra_aes_auth(uint8_t keyno, uint8_t *keybytes);
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_ultra_readblock(uint8_t blockNo, uint8_t *blockData);
+// 'blockData' is presumed to be a buffer of at least 16 bytes
 int mifare_ultra_writeblock_compat(uint8_t blockNo, uint8_t *blockData);
+// 'blockData' is presumed to be a buffer of at least 4 bytes
 int mifare_ultra_writeblock(uint8_t blockNo, uint8_t *blockData);
 int mifare_ultra_halt(void);
 
 // desfire
-int mifare_sendcmd_special(struct Crypto1State *pcs, uint8_t crypted, uint8_t cmd, uint8_t *data, uint8_t *answer, uint8_t *answer_parity, uint32_t *timing);
-int mifare_sendcmd_special2(struct Crypto1State *pcs, uint8_t crypted, uint8_t cmd, uint8_t *data, uint8_t *answer, uint8_t *answer_parity, uint32_t *timing);
+int mifare_sendcmd_special_two_bytes_data(uint8_t cmd, uint8_t *data, uint8_t *answer, size_t answer_len, uint8_t *answer_parity, size_t answer_parity_len, uint32_t *timing);
+int mifare_sendcmd_special_seventeen_bytes_data(uint8_t cmd, uint8_t *data, uint8_t *answer, size_t answer_len, uint8_t *answer_parity, size_t answer_parity_len, uint32_t *timing);
 int mifare_desfire_des_auth1(uint32_t uid, uint8_t *blockData);
 int mifare_desfire_des_auth2(uint32_t uid, uint8_t *key, uint8_t *blockData);
 
 // crypto functions
 void mf_crypto1_decrypt(struct Crypto1State *pcs, uint8_t *data, int len);
 void mf_crypto1_decryptEx(struct Crypto1State *pcs, const uint8_t *data_in, int len, uint8_t *data_out);
+
+// `data_in` is a buffer of `len` bytes
+// `par` is a buffer of `CEIL(len/8)` bytes
 void mf_crypto1_encrypt(struct Crypto1State *pcs, uint8_t *data, uint16_t len, uint8_t *par);
-void mf_crypto1_encryptEx(struct Crypto1State *pcs, const uint8_t *data_in, uint8_t *keystream,
+
+// `data_in` is a buffer of `len` bytes
+// `optional_keystream`, if non-NULL, is a buffer of `len` bytes
+// `par` is a buffer of `CEIL(len/8)` bytes
+void mf_crypto1_encryptEx(struct Crypto1State *pcs, const uint8_t *data_in, uint8_t *optional_keystream,
                           uint8_t *data_out, uint16_t len, uint8_t *par);
 uint8_t mf_crypto1_encrypt4bit(struct Crypto1State *pcs, uint8_t data);
 

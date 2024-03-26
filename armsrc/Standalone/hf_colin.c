@@ -1028,7 +1028,7 @@ int saMifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *data
             };
         }
 
-        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, 0xA0, blockNo, receivedAnswer, receivedAnswerPar, NULL) != 1) ||
+        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, 0xA0, blockNo, receivedAnswer, ARRAYLEN(receivedAnswer), receivedAnswerPar, ARRAYLEN(receivedAnswerPar), NULL) != 1) ||
                 (receivedAnswer[0] != 0x0a)) {
             DbprintfEx(FLAG_NEWLINE, "write block send command error");
             break;

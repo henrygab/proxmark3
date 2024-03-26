@@ -73,8 +73,8 @@ uint16_t get_ev1_signature(iso14a_card_select_t card, uint8_t *signature);
 uint16_t get_ev1_counter(iso14a_card_select_t card, uint8_t counter, uint8_t *response);
 uint16_t get_ev1_tearing(iso14a_card_select_t card, uint8_t counter, uint8_t *response);
 
-uint16_t get_ev1_version(iso14a_card_select_t card, uint8_t *version) {
-    return mifare_sendcmd(MIFARE_ULEV1_VERSION, NULL, 0, version, NULL, NULL);
+uint16_t get_ev1_version(iso14a_card_select_t card, uint8_t *version, size_t version_len) {
+    return mifare_sendcmd(MIFARE_ULEV1_VERSION, NULL, 0, version, version_len, NULL, 0u, NULL);
 }
 
 uint16_t get_ev1_signature(iso14a_card_select_t card, uint8_t *signature) {
@@ -185,7 +185,7 @@ void RunMod(void) {
                 // Get version and re-select card as UL EV0s like to shut off after a 0x60
                 uint8_t version[10] = {0x00};
                 uint16_t version_len = 0;
-                version_len = get_ev1_version(card, version);
+                version_len = get_ev1_version(card, version, ARRAYLEN(version));
                 iso14443a_select_card(NULL, NULL, NULL, true, 0, true);
 
                 int block_count = get_block_count(card, version, version_len);

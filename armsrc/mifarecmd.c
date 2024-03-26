@@ -532,7 +532,7 @@ void MifareValue(uint8_t arg0, uint8_t arg1, uint8_t arg2, uint8_t *datain) {
         }
 
         // send transfer (commit the change)
-        len = mifare_sendcmd_short(pcs, 1, MIFARE_CMD_TRANSFER, (transferBlk != 0) ? transferBlk : blockNo, receivedAnswer, NULL, NULL);
+        len = mifare_sendcmd_short(pcs, 1, MIFARE_CMD_TRANSFER, (transferBlk != 0) ? transferBlk : blockNo, receivedAnswer, ARRAYLEN(receivedAnswer), NULL, 0u, NULL);
         if (len != 1 && receivedAnswer[0] != 0x0A) {   //  0x0a - ACK
             if (g_dbglevel >= DBG_ERROR) Dbprintf("Cmd Error in transfer: %02x", receivedAnswer[0]);
             break;
@@ -895,8 +895,8 @@ void MifareAcquireEncryptedNonces(uint32_t arg0, uint32_t arg1, uint32_t flags, 
 
     uint8_t uid[10] = {0x00};
     uint8_t receivedAnswer[MAX_MIFARE_FRAME_SIZE] = {0x00};
-    uint8_t par_enc[1] = {0x00};
-    uint8_t buf[PM3_CMD_DATA_SIZE] = {0x00};
+    uint8_t par_enc[3] = {0x00};
+    uint8_t buf[MAX_FRAME_SIZE] = {0x00}; // was PM3_CMD_DATA_SIZE (512), but the global parity buffer size (32) only supports 256 bytes
 
     uint64_t ui64Key = bytes_to_num(datain, 6);
     uint32_t cuid = 0;
@@ -975,7 +975,7 @@ void MifareAcquireEncryptedNonces(uint32_t arg0, uint32_t arg1, uint32_t flags, 
         }
 
         // nested authentication
-        uint16_t len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, par_enc, NULL);
+        uint16_t len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, ARRAYLEN(receivedAnswer), par_enc, ARRAYLEN(par_enc), NULL);
 
         // wait for the card to become ready again
         CHK_TIMEOUT();
@@ -1215,7 +1215,7 @@ void MifareNested(uint8_t blockNo, uint8_t keyType, uint8_t targetBlockNo, uint8
             // nested authentication
             auth2_time = auth1_time + delta_time;
 
-            len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, par, &auth2_time);
+            len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, ARRAYLEN(receivedAnswer), par, ARRAYLEN(par), &auth2_time);
             if (len != 4) {
                 if (g_dbglevel >= DBG_INFO) Dbprintf("Nested: Auth2 error len=%d", len);
                 continue;
@@ -1296,7 +1296,7 @@ void MifareStaticNested(uint8_t blockNo, uint8_t keyType, uint8_t targetBlockNo,
     uint8_t uid[10] = { 0x00 };
     uint32_t cuid = 0, nt1 = 0, nt2 = 0, nt3 = 0;
     uint32_t target_nt[2] = {0x00}, target_ks[2] = {0x00};
-    uint8_t par[1] = { 0x00 };
+    uint8_t par[2] = { 0x00 };
     uint8_t receivedAnswer[10] = { 0x00 };
 
     struct Crypto1State mpcs = { 0, 0 };
@@ -1340,7 +1340,7 @@ void MifareStaticNested(uint8_t blockNo, uint8_t keyType, uint8_t targetBlockNo,
             target_nt[1] = prng_successor(nt1, 320);
         }
 
-        len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, par, NULL);
+        len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, ARRAYLEN(receivedAnswer), par, ARRAYLEN(par), NULL);
         if (len != 4) {
             continue;
         };
@@ -1365,7 +1365,7 @@ void MifareStaticNested(uint8_t blockNo, uint8_t keyType, uint8_t targetBlockNo,
             continue;
         };
 
-        len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, par, NULL);
+        len = mifare_sendcmd_short(pcs, AUTH_NESTED, MIFARE_AUTH_KEYA + (targetKeyType & 0x01), targetBlockNo, receivedAnswer, ARRAYLEN(receivedAnswer), par, ARRAYLEN(par), NULL);
         if (len != 4) {
             continue;
         };
@@ -2051,7 +2051,7 @@ void MifarePersonalizeUID(uint8_t keyType, uint8_t perso_option, uint64_t key) {
 
         uint8_t receivedAnswer[MAX_MIFARE_FRAME_SIZE];
         uint8_t receivedAnswerPar[MAX_MIFARE_PARITY_SIZE];
-        int len = mifare_sendcmd_short(pcs, true, MIFARE_EV1_PERSONAL_UID, perso_option, receivedAnswer, receivedAnswerPar, NULL);
+        int len = mifare_sendcmd_short(pcs, true, MIFARE_EV1_PERSONAL_UID, perso_option, receivedAnswer, ARRAYLEN(receivedAnswer), receivedAnswerPar, ARRAYLEN(receivedAnswerPar), NULL);
         if (len != 1 || receivedAnswer[0] != CARD_ACK) {
             if (g_dbglevel >= DBG_ERROR) Dbprintf("Cmd Error: %02x", receivedAnswer[0]);
             break;
@@ -2362,7 +2362,7 @@ void MifareCSetBlock(uint32_t arg0, uint32_t arg1, uint8_t *datain) {
             }
         }
 
-        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, ISO14443A_CMD_WRITEBLOCK, blockNo, receivedAnswer, receivedAnswerPar, NULL) != 1) || (receivedAnswer[0] != 0x0a)) {
+        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, ISO14443A_CMD_WRITEBLOCK, blockNo, receivedAnswer, ARRAYLEN(receivedAnswer), receivedAnswerPar, ARRAYLEN(receivedAnswerPar), NULL) != 1) || (receivedAnswer[0] != 0x0a)) {
             if (g_dbglevel >= DBG_ERROR) Dbprintf("write block send command error");
             errormsg = 4;
             break;
@@ -2447,7 +2447,7 @@ void MifareCGetBlock(uint32_t arg0, uint32_t arg1, uint8_t *datain) {
         }
 
         // read block
-        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, ISO14443A_CMD_READBLOCK, blockNo, receivedAnswer, receivedAnswerPar, NULL) != MAX_MIFARE_FRAME_SIZE)) {
+        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, ISO14443A_CMD_READBLOCK, blockNo, receivedAnswer, ARRAYLEN(receivedAnswer), receivedAnswerPar, ARRAYLEN(receivedAnswerPar), NULL) != MAX_MIFARE_FRAME_SIZE)) {
             if (g_dbglevel >= DBG_ERROR) Dbprintf("read block send command error");
             errormsg = 0;
             break;
@@ -2633,7 +2633,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
                     uint64_t tmpkey = bytes_to_num(key, 6);
                     if (mifare_classic_authex(pcs, cuid, 0, keytype, tmpkey, AUTH_FIRST, NULL, NULL) == 0) {
 
-                        if ((mifare_sendcmd_short(pcs, 1, ISO14443A_CMD_WRITEBLOCK, 0, buf, par, NULL) == 1) && (buf[0] == 0x0A)) {
+                        if ((mifare_sendcmd_short(pcs, 1, ISO14443A_CMD_WRITEBLOCK, 0, buf, MAX_MIFARE_FRAME_SIZE, par, MAX_MIFARE_PARITY_SIZE, NULL) == 1) && (buf[0] == 0x0A)) {
                             flag |= MAGIC_FLAG_GEN_2;
                             // turn off immediately to ensure nothing ever accidentally writes to the block
                             FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
@@ -2721,7 +2721,7 @@ void MifareHasStaticNonce(void) {
         uint8_t rec[4] = {0x00};
         uint8_t recpar[1] = {0x00};
         // Transmit MIFARE_CLASSIC_AUTH 0x60, block 0
-        int len = mifare_sendcmd_short(pcs, false, MIFARE_AUTH_KEYA, 0, rec, recpar, NULL);
+        int len = mifare_sendcmd_short(pcs, false, MIFARE_AUTH_KEYA, 0, rec, ARRAYLEN(rec), recpar, ARRAYLEN(recpar), NULL);
         if (len != 4) {
             retval = PM3_ESOFT;
             goto OUT;
@@ -2918,7 +2918,7 @@ void MifareGen3Blk(uint8_t block_len, uint8_t *block) {
 
     bool doReselect = false;
     if (block_len < MIFARE_BLOCK_SIZE) {
-        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, ISO14443A_CMD_READBLOCK, 0, &cmd[sizeof(block_cmd)], NULL, NULL) != MAX_MIFARE_FRAME_SIZE)) {
+        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, ISO14443A_CMD_READBLOCK, 0, &cmd[sizeof(block_cmd)], MAX_MIFARE_FRAME_SIZE, NULL, 0u, NULL) != MAX_MIFARE_FRAME_SIZE)) {
             if (g_dbglevel >= DBG_ERROR) Dbprintf("Read manufacturer block failed");
             retval = PM3_ESOFT;
             goto OUT;
@@ -3181,7 +3181,7 @@ void MifareSetMod(uint8_t *datain) {
         }
 
         int respLen;
-        if (((respLen = mifare_sendcmd_short(pcs, CRYPT_ALL, MIFARE_EV1_SETMOD, mod, buf, par, NULL)) != 1) || (buf[0] != 0x0a)) {
+        if (((respLen = mifare_sendcmd_short(pcs, CRYPT_ALL, MIFARE_EV1_SETMOD, mod, buf, MAX_MIFARE_FRAME_SIZE, par, MAX_MIFARE_PARITY_SIZE, NULL)) != 1) || (buf[0] != 0x0a)) {
             if (g_dbglevel >= DBG_ERROR) Dbprintf("SetMod error; response[0]: %hhX, len: %d", buf[0], respLen);
             break;
         }
