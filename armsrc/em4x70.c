@@ -220,10 +220,104 @@ static bool check_pulse_length(uint32_t pulse_tick_length, uint32_t target_tick_
             (pulse_tick_length <= (target_tick_length + EM4X70_T_TAG_TOLERANCE)));
 }
 
+#if 1 // brute force logging of sent buffer
+
+// e.g., authenticate sends 93 bits (2x RM, 56x rnd, 7x div, 28x frnd) == 2+56+35 = 58+35 = 93
+#define EM4X70_MAX_LOG_BITS MAX(EM4X70_MAX_RECEIVE_LENGTH, 96)
+
+typedef struct _em4x70_log_t {
+    uint32_t start_tick;
+    uint32_t end_tick;
+    uint32_t bits_used;
+    uint8_t  bit[EM4X70_MAX_LOG_BITS]; // one bit per byte
+} em4x70_sublog_t;
+typedef struct _em4x70_transmit_log_t {
+    em4x70_sublog_t transmit;
+    em4x70_sublog_t receive;
+} em4x70_transmitted_data_log_t;
+em4x70_transmitted_data_log_t g_not_used_directly; // change to bigbuff allocation?
+em4x70_transmitted_data_log_t* g_Log = &g_not_used_directly;
+static void log_reset(void) {
+    if (g_Log != NULL) {
+        memset(g_Log, 0, sizeof(em4x70_transmitted_data_log_t));
+    }
+}
+static void log_dump_helper(em4x70_sublog_t * part, bool is_transmit) {
+    char const * const  direction = is_transmit ? "sent >>>" : "recv <<<";
+    if (part->bits_used == 0) {
+        if (g_dbglevel >= DBG_INFO || true) {
+            Dbprintf("%s: no data", direction);
+        }
+    } else {
+        char bitstring[EM4X70_MAX_LOG_BITS + 1];
+        memset(bitstring, 0, sizeof(bitstring));
+        for (int i = 0; i < part->bits_used; i++) {
+            bitstring[i] = part->bit[i] ? '1' : '0';
+        }
+        Dbprintf(
+            "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s",
+            direction,
+            part->start_tick, part->end_tick,
+            part->end_tick - part->start_tick,
+            part->bits_used, bitstring
+            );
+    }
+}
+static void log_dump(void) {
+    bool hasContent = false;
+    if (g_Log != NULL) {
+        uint8_t * check_for_data = (uint8_t *)g_Log;
+        for (size_t i = 0; i < sizeof(em4x70_transmitted_data_log_t); ++i) {
+            if (check_for_data[i] != 0) {
+                hasContent = true;
+                break;
+            }
+        }
+    }
+    if (hasContent) {
+        log_dump_helper(&g_Log->transmit, true);
+        log_dump_helper(&g_Log->receive, false);
+    }
+}
+static void log_sent_bit(uint32_t start_tick, bool bit) {
+    if (g_Log != NULL) {
+        if (g_Log->transmit.bits_used == 0) {
+            g_Log->transmit.start_tick = start_tick;
+        }
+        g_Log->transmit.bit[g_Log->transmit.bits_used] = bit;
+        g_Log->transmit.bits_used++;
+    }
+}
+static void log_sent_bit_end(uint32_t end_tick) {
+    if (g_Log != NULL) {
+        g_Log->transmit.end_tick = end_tick;
+    }
+}
+static void log_received_bit_start(uint32_t start_tick) {
+    if (g_Log != NULL && g_Log->receive.start_tick == 0) {        
+        g_Log->receive.start_tick = start_tick;
+    }
+}
+static void log_received_bit_end(uint32_t end_tick) {
+    if (g_Log != NULL) {
+        g_Log->receive.end_tick = end_tick;
+    }
+}
+static void log_received_bits(uint8_t *byte_per_bit_array, size_t array_element_count) {
+    if (g_Log != NULL) {
+        memcpy(&g_Log->receive.bit[g_Log->receive.bits_used], byte_per_bit_array, array_element_count);
+        g_Log->receive.bits_used += array_element_count;
+    }
+}
+#endif // brute force logging of sent buffer
+
+
+// This is the only function that actually toggles modulation for sending bits
 static void em4x70_send_bit(bool bit) {
 
     // send single bit according to EM4170 application note and datasheet
     uint32_t start_ticks = GetTicks();
+    log_sent_bit(start_ticks, bit);
 
     if (bit == 0) {
 
@@ -246,7 +340,18 @@ static void em4x70_send_bit(bool bit) {
         LOW(GPIO_SSC_DOUT);
         while (TICKS_ELAPSED(start_ticks) <= EM4X70_T_TAG_FULL_PERIOD);
     }
+    log_sent_bit_end(GetTicks());
 }
+
+/**
+ * em4x70_send_command
+ * 
+ *  sends 4-bits for the command.
+ *  when cmd_parity is true, this is a 3-bit command + 1 parity bit
+ *  when cmd_parity is false, the command is sent as a 4-bit value
+ * 
+ */
+// TODO: Add and use this function
 
 /**
  * em4x70_send_nibble
@@ -254,7 +359,7 @@ static void em4x70_send_bit(bool bit) {
  *  sends 4 bits of data + 1 bit of parity (with_parity)
  *
  */
-static void em4x70_send_nibble(uint8_t nibble, bool with_parity) {
+static void em4x70_send_nibble(uint8_t nibble, bool add_extra_parity_bit) {
     int parity = 0;
     int msb_bit = 0;
 
@@ -269,8 +374,9 @@ static void em4x70_send_nibble(uint8_t nibble, bool with_parity) {
         parity ^= bit;
     }
 
-    if (with_parity)
+    if (add_extra_parity_bit) {
         em4x70_send_bit(parity);
+    }
 }
 
 static void em4x70_send_byte(uint8_t byte) {
@@ -319,7 +425,10 @@ static bool check_ack(void) {
 }
 
 // TODO: define and use structs for rnd, frnd, response
+// log entry/exit point
 static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *response) {
+    int result = PM3_ESOFT;
+    log_reset();
 
     if (find_listen_window(true)) {
 
@@ -349,18 +458,22 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
         uint8_t grnd[EM4X70_MAX_RECEIVE_LENGTH] = {0};
         int num = em4x70_receive(grnd, 20);
         if (num < 20) {
-            if (g_dbglevel >= DBG_EXTENDED) Dbprintf("Auth failed");
-            return PM3_ESOFT;
+            if (g_dbglevel >= DBG_EXTENDED) {
+                Dbprintf("Auth failed");
+            }
+            result = PM3_ESOFT;
+        } else {
+            // although only received 20 bits
+            // ask for 24 bits converted because
+            // the utility function requires
+            // decoding in multiples of 8 bits
+            encoded_bit_array_to_bytes(grnd, 24, response);
+            result = PM3_SUCCESS;
         }
-        // although only received 20 bits
-        // ask for 24 bits converted because
-        // this utility function requires
-        // decoding in multiples of 8 bits
-        encoded_bit_array_to_bytes(grnd, 24, response);
-        return PM3_SUCCESS;
     }
 
-    return PM3_ESOFT;
+    log_dump();
+    return result;
 }
 
 // Sets one (reflected) byte and returns carry bit
@@ -439,7 +552,10 @@ static int bruteforce(const uint8_t address, const uint8_t *rnd, const uint8_t *
     return PM3_ESOFT;
 }
 
+// log entry/exit point
 static int send_pin(const uint32_t pin) {
+    int result = PM3_ESOFT;
+    log_reset();
 
     // sends pin code for unlocking
     if (find_listen_window(true)) {
@@ -470,17 +586,22 @@ static int send_pin(const uint32_t pin) {
             int count_of_bits_received  = em4x70_receive(tag_id, 32);
             if (count_of_bits_received < 32) {
                 Dbprintf("Invalid ID Received");
-                return PM3_ESOFT;
+                result = PM3_ESOFT;
+            } else {
+                encoded_bit_array_to_bytes(tag_id, count_of_bits_received, &tag.data[4]);
+                result = PM3_SUCCESS;
             }
-            encoded_bit_array_to_bytes(tag_id, count_of_bits_received, &tag.data[4]);
-            return PM3_SUCCESS;
         }
     }
 
-    return PM3_ESOFT;
+    log_dump();
+    return result;
 }
 
+// log entry/exit point
 static int write(const uint16_t word, const uint8_t address) {
+    int result = PM3_ESOFT;
+    log_reset();
 
     // writes <word> to specified <address>
     if (find_listen_window(true)) {
@@ -504,12 +625,13 @@ static int write(const uint16_t word, const uint8_t address) {
             // for saving data and should return with ACK
             WaitTicks(EM4X70_T_TAG_WEE);
             if (check_ack()) {
-
-                return PM3_SUCCESS;
+                result = PM3_SUCCESS;
             }
         }
     }
-    return PM3_ESOFT;
+
+    log_dump();
+    return result;
 }
 
 
@@ -580,12 +702,15 @@ static uint8_t encoded_bit_array_to_byte(const uint8_t *bits, int count_of_bits)
     return byte;
 }
 
+// log entry/exit point
 static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expected_byte_count) {
 
     int retries = EM4X70_COMMAND_RETRIES;
-    while (retries) {
-        retries--;
+    bool result = false;
 
+    log_reset();
+    while (retries) { // retry is only for finding the listen window .. not actual command!
+        retries--;
         if (find_listen_window(true)) {
             uint8_t bits[EM4X70_MAX_RECEIVE_LENGTH] = {0};
             size_t out_length_bits = expected_byte_count * 8;
@@ -593,13 +718,15 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
             int len = em4x70_receive(bits, out_length_bits);
             if (len < out_length_bits) {
                 Dbprintf("Invalid data received length: %d, expected %d", len, out_length_bits);
-                return false;
+            } else {
+                encoded_bit_array_to_bytes(bits, len, bytes);
+                result = true;
             }
-            encoded_bit_array_to_bytes(bits, len, bytes);
-            return true;
+            break;
         }
     }
-    return false;
+    log_dump();
+    return result;
 }
 
 
@@ -610,9 +737,7 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
  *  read pre-programmed ID (4 bytes)
  */
 static bool em4x70_read_id(void) {
-
     return send_command_and_read(EM4X70_COMMAND_ID, &tag.data[4], 4);
-
 }
 
 /**
@@ -621,9 +746,7 @@ static bool em4x70_read_id(void) {
  *  read user memory 1 (4 bytes including lock bits)
  */
 static bool em4x70_read_um1(void) {
-
     return send_command_and_read(EM4X70_COMMAND_UM1, &tag.data[0], 4);
-
 }
 
 /**
@@ -632,9 +755,7 @@ static bool em4x70_read_um1(void) {
  *  read user memory 2 (8 bytes)
  */
 static bool em4x70_read_um2(void) {
-
     return send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
-
 }
 
 static bool find_em4x70_tag(void) {
@@ -643,6 +764,7 @@ static bool find_em4x70_tag(void) {
     return find_listen_window(false);
 }
 
+// This is the ONLY function that receives data from the tag
 static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
 
     uint32_t pl;
@@ -678,6 +800,7 @@ static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
             return 0;
         }
     }
+    log_received_bit_start(GetTicks());
 
     // identify remaining bits based on pulse lengths
     // between listen windows only pulse lengths of 1, 1.5 and 2 are possible
@@ -727,10 +850,15 @@ static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
             break;
         }
     }
+    log_received_bit_end(GetTicks());
+    log_received_bits(bits, bit_pos);
 
     return bit_pos;
 }
 
+
+
+// CLIENT ENTRY POINTS
 void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
 
     bool success = false;
