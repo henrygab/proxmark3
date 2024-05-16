@@ -223,7 +223,7 @@ static bool check_pulse_length(uint32_t pulse_tick_length, uint32_t target_tick_
 #if 1 // brute force logging of sent buffer
 
 // e.g., authenticate sends 93 bits (2x RM, 56x rnd, 7x div, 28x frnd) == 2+56+35 = 58+35 = 93
-#define EM4X70_MAX_LOG_BITS MAX(EM4X70_MAX_RECEIVE_LENGTH, 96)
+#define EM4X70_MAX_LOG_BITS MAX(EM4X70_MAX_RECEIVE_LENGTH, 100)
 
 typedef struct _em4x70_log_t {
     uint32_t start_tick;
