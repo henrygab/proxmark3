@@ -18,11 +18,166 @@ This can be used to ensure no regressions in what is sent
       * EM4X70_COMMAND_AUTH  -- Always with fifth parity bit added
       * EM4X70_COMMAND_PIN   -- Always with fifth parity bit added
 
-## lf em 4x70 info
+## Comparison of cmds send with / without `--par`
+
+This section will only list the commands sent, and break them down into their components.
+It's intended to be compact, and document what the code did as of 2024-05-01 (or thereabouts).
+First will be log without, followed by log with `--par` option.
+
+### `lf em 4x70 info`
+
+Bits sent to the tag are IDENTICAL.
+The `--par` option is IGNORED ... would have expected
+to see CMD values of `0011`, `0101`, and `1111` instead!
+
+```
+[#] REM               | RM | CMD    | Addr   | Data....
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>:  6 bits:| 00 | 0001   |        |
+[#] sent >>>:  6 bits:| 00 | 0010   |        |
+[#] sent >>>:  6 bits:| 00 | 0111   |        |
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>:  6 bits:| 00 | 0001   |        |
+[#] sent >>>:  6 bits:| 00 | 0010   |        |
+[#] sent >>>:  6 bits:| 00 | 0111   |        |
+[#] REM --------------|----|--------|--------|--------------
+```
+
+
+### `lf em 4x70 write -b 13 -d C65B`
+
+When `--par` is used, the command is treated as a three-bit
+command, and a parity bit calculated and added.
+
+As can be seen, the existing code was re-using that logic
+also for the address and data bits.  This might be OK as
+to the address bits (unlikely, but possible).  This is most
+definitely wrong as to the data bits.
+
+```
+[#] REM               | RM | CMD    | Addr   | Data....
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1101 1 | 1100 0 0110 0 0101 0 1011 1  0100 0
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 30 bits:| 00 |  101 0 |  101 0 |  100 1  110 0  101 0  011 0   100 0
+[#] REM --------------|----|--------|--------|--------------
+```
+
+
+### `lf em 4x70 setpin --pin 12345678`
+
+```
+[#] REM               | RM | CMD    | Addr   | Data....
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>:  6 bits:| 00 | 0001   |        |
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1011 1 | 0001 1 0010 1 0011 0 0100 1  0100 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1010 0 | 0101 0 0110 0 0111 1 1000 1  1100 0
+[#] sent >>>: 71 bits:| 00 | 0100 1 |        | 0111   1000   1011   1000  // ID  nibbles 1-4
+                      |    |        |        | 1110   0000   0001   0010  // ID  nibbles 5-8
+                      |    |        |        | 0001   0010   0011   0100  // Pin nibbles 1-4
+                      |    |        |        | 0101   0110   0111   1000  // Pin nibbles 5-8
+[#] sent >>>:  6 bits:| 00 | 0010   |        |
+[#] sent >>>:  6 bits:| 00 | 0111   |        |
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 6 bits: | 00 |  001 1 |        |
+[#] REM --------------|----|--------|--------|--------------
+```
+
+Surprisingly, `setpin` attempts to send `EM4X70_COMMAND_ID` as a 3-bit
+value (+ parity over those three bits).  My tag rejects the command
+at this point, as it interprets the command as `EM4X70_COMMAND_AUTH`.
+
+TODO: Test code path on tag that requires 3-bit commands w/ parity bit.
+
+
+### `lf em 4x70 unlock --pin AAAAAAAA`
+
+TODO: Test code path on tag that requires 3-bit commands w/ parity bit.
+
+My current tags properly reject the earliest command (sent as 3-bit
+`EM4X70_COMMAND_ID` + its parity) as being `EM4X70_COMMAND_AUTH`.
+Thus, it properly rejects the command.
+
+Writes pin to blocks 11, 10, then unlocks using that pin code.
+
+```
+[#] REM               | RM | CMD    | Addr   | Data....
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>:  6 bits:| 00 | 0001   |        |
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1011 1 | 0001 1 0010 1 0011 0 0100 1  0100 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1010 0 | 0101 0 0110 0 0111 1 1000 1  1100 0
+[#] sent >>>: 71 bits:| 00 | 0100 1 |        | 0111   1000   1011   1000 
+                      |    |        |        | 1110   0000   0001   0010 
+                      |    |        |        | 0001   0010   0011   0100 
+                      |    |        |        | 0101   0110   0111   1000 
+[#] sent >>>:  6 bits:| 00 | 0010   |        |
+[#] sent >>>:  6 bits:| 00 | 0111   |        |
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 6 bits: | 00 |  001 1 |        |
+[#] REM --------------|----|--------|--------|--------------
+```
+
+### `lf em 4x70 setkey -k 022A028C02BE000102030405`
+
+TODO: Test code path on tag that requires 3-bit commands w/ parity bit.
+
+My current tags properly reject the earliest command (sent as 3-bit
+`EM4X70_COMMAND_ID` + its parity) as being `EM4X70_COMMAND_AUTH`.
+Thus, it properly rejects the command.
+
+
+
+```
+[#] REM               | RM | CMD    | Addr   | Data....
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>:  6 bits:| 00 | 0001   |        |
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1001 0 | 0000 0 0010 1 0010 1 1010 0  1010 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 1000 1 | 0000 0 0010 1 1000 1 1100 0  0110 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 0111 1 | 0000 0 0010 1 1011 1 1110 1  0111 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 0110 0 | 0000 0 0000 0 0000 0 0001 1  0001 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 0101 0 | 0000 0 0010 1 0000 0 0011 0  0001 0
+[#] sent >>>: 37 bits:| 00 | 0101 0 | 0100 1 | 0000 0 0100 1 0000 0 0101 0  0001 0
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 6 bits: | 00 |  001 1 |        |
+[#] REM --------------|----|--------|--------|--------------
+```
+
+
+### `lf em 4x70 auth --rnd 7D5167003571F8 --frn 982DBCC0`
+
+The only problem is that the final nibble of FRN
+is missing its most significant bit.
+
+```
+[#] REM               | RM | CMD    | Addr   | Data....
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 98 bits:| 00 | 0011 0 |        | 0111 1101 0101 0001   \  
+                                             | 0110 0111 0000 0000    \_Rnd
+                                             | 0011 0101 0111 0001    / 
+                                             | 1111 1000             /  
+                                             | 0000000               - Tdiv
+                                             | 1001 1000 0010 1101   \_FRN
+                                             | 1011 1100 1100        / 
+[#] REM --------------|----|--------|--------|--------------
+[#] sent >>>: 96 bits:| 00 |  011 0 |        | 0111 1101 0101 0001   \  
+                                             | 0110 0111 0000 0000    \_Rnd
+                                             | 0011 0101 0111 0001    / 
+                                             | 1111 1000             /  
+                                             | 0000000               - Tdiv
+                                             | 1001 1000 0010 1101   \_FRN
+                                             | 1011 1100  100        / 
+[#] REM --------------|----|--------|--------|--------------
+```
+
+## More Comprehensive logs ... Without `--par` option
+
+<details><summary>Hiding by default as not critical</summary><p/>
+
+### lf em 4x70 info
 
 `[usb|script] pm3 --> lf em 4x70 info`
 
-### log
+#### log
 
 ```
 [#] sent >>>: [    17169 ..    19545 ] (   2376 )  6 bits: 000001
@@ -33,7 +188,7 @@ This can be used to ensure no regressions in what is sent
 [#] recv <<<: [    81702 ..   106281 ] (  24579 ) 64 bits: 0001001000110100101010101010101010101010101010101010101010101010
 ```
 
-### decoded log
+#### decoded log
 
 ```
 [#] sent >>>:  6 bits: 00 0001
@@ -58,7 +213,7 @@ This can be used to ensure no regressions in what is sent
 
 
 
-### other output
+#### other output
 
 ```
 [=] --- Tag Information ---------------------------
@@ -93,58 +248,41 @@ This can be used to ensure no regressions in what is sent
 [=] 
 ```
 
-## lf em 4x70 write (UM2 block 15)
+### lf em 4x70 write (UM2 block 15)
 
-`[usb|script] pm3 --> lf em 4x70 write -b 15 -d AAAA`
+`[usb|script] pm3 --> lf em 4x70 write -b 15 -d 576B`
 
-### log
+#### log
 
 ```
-[#] sent >>>: [    17169 ..    31602 ] (  14433 ) 37 bits: 0001010111101010010100101001010000000
+[#] sent >>>: [    17163 ..    31600 ] (  14437 ) 37 bits: 0001010111100101001111011001011111110
 [#] recv <<<: no data
-[#] sent >>>: [    86254 ..    88628 ] (   2374 )  6 bits: 000001
-[#] recv <<<: [    95082 ..   107373 ] (  12291 ) 32 bits: 01111000101110001110000000010010
-[#] sent >>>: [   114104 ..   116477 ] (   2373 )  6 bits: 000010
-[#] recv <<<: [   122935 ..   135223 ] (  12288 ) 32 bits: 10100001110111110101011001111000
-[#] sent >>>: [   141957 ..   144331 ] (   2374 )  6 bits: 000111
-[#] recv <<<: [   150774 ..   175352 ] (  24578 ) 64 bits: 1010101010101010101010101010101010101010101010101010101010101010
+[#] ... lines that retrieve ID/UM1/UM2 removed ...
 ```
 
-### decoded log
+#### decoded log
 
 ```
 [#] sent >>>: 37 bits: 00 01010 11110 10100 10100 10100 10100 00000
-                       || ||||| ||||| ||||| ||||| ||||| ||||| \\\\\---- 0000 0 == 5th row: column parity + 0
-                       || ||||| ||||| ||||| ||||| ||||| \\\\\---------- 1010 0 == 0xA 4th row nibble + row parity
-                       || ||||| ||||| ||||| ||||| \\\\\---------------- 1010 0 == 0xA 3rd row nibble + row parity
-                       || ||||| ||||| ||||| \\\\\---------------------- 1010 0 == 0xA 2nd row nibble + row parity
-                       || ||||| ||||| \\\\\---------------------------- 1010 0 == 0xA 1st row nibble + row parity
+                       || ||||| ||||| ||||| ||||| ||||| ||||| \\\\\---- 1111 0 == 5th row: column parity + 0
+                       || ||||| ||||| ||||| ||||| ||||| \\\\\---------- 1011 1 == 0xB 4th row nibble + row parity
+                       || ||||| ||||| ||||| ||||| \\\\\---------------- 0110 0 == 0x6 3rd row nibble + row parity
+                       || ||||| ||||| ||||| \\\\\---------------------- 0111 1 == 0x7 2nd row nibble + row parity
+                       || ||||| ||||| \\\\\---------------------------- 0101 0 == 0x5 1st row nibble + row parity
                        || ||||| \\\\\---------------------------------- 1111 0 == address to write to + address parity
                        || \\\\\---------------------------------------- 0101 0 == EM4X70_COMMAND_WRITE + command parity (!!!)
                        \\---------------------------------------------- 00     == RM
-[#] sent >>>:  6 bits: 00 0001
-                       RM EM4X70_COMMAND_ID
-[#] recv <<<: 32 bits: 0111 1000 1011 1000 1110 0000 0001 0010
-                          7    8    B    8    E    0    1    2
-[#] sent >>>:  6 bits: 00 0010
-                       RM EM4X70_COMMAND_UM1
-[#] recv <<<: 32 bits: 1010 0001 1101 1111 0101 0110 0111 1000
-                          A    1    D    F    5    6    7    8
-[#] sent >>>:  6 bits: 00 0111
-                       RM EM4X70_COMMAND_UM2
-[#] recv <<<: 64 bits: 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010 1010
-                          A    A    A    A    A    A    A    A    A    A    A    A    A    A    A    A
 ```
 
 
 
-### other output
+#### other output
 
 ```
 [=] --- Tag Information ---------------------------
 [=] Block |   data   | info
 [=] ------+----------+-----------------------------
-[=]  15   |   AA AA  |  UM2
+[=]  15   |   57 6B  |  UM2
 [=]  14   |   AA AA  |  UM2
 [=]  13   |   AA AA  |  UM2
 [=]  12   |   AA AA  |  UM2
@@ -173,12 +311,12 @@ This can be used to ensure no regressions in what is sent
 [=] 
 ```
 
-## lf em 4x70 setkey (autorecovery test key)
+### lf em 4x70 setkey (autorecovery test key)
 
 This writes to block 9..4.
 `[usb|script] pm3 --> lf em 4x70 setkey -k 022A028C02BE000102030405`
 
-### log
+#### log
 
 ```
 [#] sent >>>: [    17163 ..    19539 ] (   2376 )  6 bits: 000001
@@ -199,7 +337,7 @@ This writes to block 9..4.
 [#] recv <<<: [    61410 ..    69091 ] (   7681 ) 20 bits: 10010001110110101000
 ```
 
-### decoded log
+#### decoded log
 
 ```
 [usb|script] pm3 --> lf em 4x70 setkey -k 022A 028C 02BE 0001 0203 0405
@@ -286,27 +424,27 @@ Equivalent of: lf em 4x70 auth --rnd EF23C6FEEC2586 --frn 99DD8FC0 --> 91DA80
 ```
 
 
-### other output
+#### other output
 ```
 [=] Writing new key ( ok )
 [=] Verifying auth for new key: 022a028c02be000102030405 -->  lf em 4x70 auth --rnd EF23C6FEEC2586 --frn 99DD8FC0 --> 91DA80
 [=] Authenticating with new key ( ok )
 ```
 
-## lf em 4x70 auth
+### lf em 4x70 auth
 
 This is authentication using the autorecovery test key.
 
 `[usb|script] pm3 --> lf em 4x70 auth --rnd EF23C6FEEC2586 --frn 99DD8FC0` (log 1)
 `[usb|script] pm3 --> lf em 4x70 auth --rnd 8713F4E00B8716 --frn CB8A1EA0` (log 2)
 
-### log 1
+#### log 1
 ```
 [#] sent >>>: [    17169 ..    55350 ] (  38181 ) 98 bits: 00001101110111100100011110001101111111011101100001001011000011000000001001100111011101100011111100
 [#] recv <<<: [    61421 ..    69103 ] (   7682 ) 20 bits: 10010001110110101000
 ```
 
-### decoded log 1
+#### decoded log 1
 ```
 [#] sent >>>: 98 bits: 00 00110  1110 1111 0010 0011 1100 0110 1111 1110 1110 1100 0010 0101 1000 0110   0000000  1001 1001 1101 1101 1000 1111 1100
                        || |||||  |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| ||||   |||||||  \--/ \--/ \--/ \--/ \--/ \--/ \--/---- FRN
@@ -321,13 +459,13 @@ This is authentication using the autorecovery test key.
                           9    1    D    A    8 ---- GRN
 ```
 
-### log 2
+#### log 2
 ```
 [#] sent >>>: [    21002 ..    59178 ] (  38176 ) 98 bits: 00001101000011100010011111101001110000000001011100001110001011000000001100101110001010000111101010
 [#] recv <<<: [        1 ..    73322 ] (  73321 ) 20 bits: 11110100100011100001
 ```
 
-### decoded lgo 2
+#### decoded lgo 2
 ```
 [#] sent >>>: 98 bits: 00 00110  1000 0111 0001 0011 1111 0100 1110 0000 0000 1011 1000 0111 0001 0110   0000000  1100 1011 1000 1010 0001 1110 1010
                        || |||||  |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| |||| ||||   |||||||  \--/ \--/ \--/ \--/ \--/ \--/ \--/---- FRN
@@ -346,19 +484,19 @@ This is authentication using the autorecovery test key.
 
 
 
-### other output
+#### other output
 
 ```
 [=] Tag Auth Response: 91 DA 80
 ```
 
-## lf em 4x70 setpin
+### lf em 4x70 setpin
 
 Set new pin code (writes to blocks 11, 10)
 
 `[usb|script] pm3 --> lf em 4x70 setpin -p 12345678`
 
-### log
+#### log
 
 ```
 [#] sent >>>: [    17162 ..    19540 ] (   2378 )  6 bits: 000001
@@ -375,7 +513,7 @@ Set new pin code (writes to blocks 11, 10)
 [#] recv <<<: [   319451 ..   344030 ] (  24579 ) 64 bits: 1010101010101010101010101010101010101010101010101010101010101010
 ```
 
-### decoded log
+#### decoded log
 
 ```
 [#] sent >>>:  6 bits: 00 0001
@@ -417,7 +555,7 @@ Set new pin code (writes to blocks 11, 10)
 ```
 
 
-### other output
+#### other output
 
 ```
 [=] --- Tag Information ---------------------------
@@ -453,13 +591,13 @@ Set new pin code (writes to blocks 11, 10)
 [=] Writing new PIN ( ok )
 ```
 
-## lf em 4x70 write (lock the tag)
+### lf em 4x70 write (lock the tag)
 
 This locks the tag by setting top two bits of UM1.
 
 `[usb|script] pm3 --> lf em 4x70 write -b 1 -d E1DF`
 
-### log
+#### log
 
 ```
 [#] sent >>>: [    17164 ..    31601 ] (  14437 ) 37 bits: 0001010000111110100011110111111011010
@@ -472,7 +610,7 @@ This locks the tag by setting top two bits of UM1.
 [#] recv <<<: [   150792 ..   175370 ] (  24578 ) 64 bits: 1010101010101010101010101010101010101010101010101010101010101010
 ```
 
-### decoded log
+#### decoded log
 
 ```
 [#] sent >>>: 37 bits: 00 01010  00011  11101 00011 11011 11110 11010
@@ -489,7 +627,7 @@ Skipping reads of ID, UM1, UM2
 ```
 
 
-### other output
+#### other output
 
 ```
 [=] --- Tag Information ---------------------------
@@ -524,11 +662,11 @@ Skipping reads of ID, UM1, UM2
 [=] 
 ```
 
-## lf em 4x70 unlock
+### lf em 4x70 unlock
 
 `[usb|script] pm3 --> lf em 4x70 unlock -p 12345678`
 
-### log
+#### log
 
 ```
 [#] sent >>>: [    17162 ..    19538 ] (   2376 )  6 bits: 000001
@@ -541,7 +679,7 @@ Skipping reads of ID, UM1, UM2
 [#] recv <<<: [   181296 ..   205874 ] (  24578 ) 64 bits: 1010101010101010101010101010101010101010101010101010101010101010
 ```
 
-### other output
+#### other output
 
 ```
 [=] --- Tag Information ---------------------------
@@ -576,13 +714,13 @@ Skipping reads of ID, UM1, UM2
 [=] 
 ```
 
-## lf em 4x70 setpin (revert to AAAAAAAA)
+### lf em 4x70 setpin (revert to AAAAAAAA)
 
 Always leave the tag with pin `AAAAAAAA`.
 
 `[usb|script] pm3 --> lf em 4x70 setpin -p AAAAAAAA`
 
-### log
+#### log
 
 ```
 [#] sent >>>: [    17169 ..    19544 ] (   2375 )  6 bits: 000001
@@ -599,7 +737,7 @@ Always leave the tag with pin `AAAAAAAA`.
 [#] recv <<<: [   319482 ..   344060 ] (  24578 ) 64 bits: 1010101010101010101010101010101010101010101010101010101010101010
 ```
 
-### decoded log
+#### decoded log
 
 ```
 [#] sent >>>:  6 bits: 00 0001
@@ -640,7 +778,7 @@ Always leave the tag with pin `AAAAAAAA`.
 skipping read of UM1 and UM2
 ```
 
-### other output
+#### other output
 
 ```
 [=] --- Tag Information ---------------------------
@@ -677,6 +815,8 @@ skipping read of UM1 and UM2
 ```
 
 
+</details>
+
 ## General format of the output:
 
 ```
@@ -698,6 +838,8 @@ NOTE: bits received by reader EXCLUDE the 12-bit synchronization header (`111111
 ## Initialization of the tag
 
 Script to initialize the tag to known starting state:
+
+<details><summary>Hiding by default as not critical</summary><p/>
 
 ```
 rem set UM2 blocks to `AAAA`
@@ -1369,5 +1511,7 @@ lf em 4x70 write -b 1 -d 21DF
 [=] Tag is UNLOCKED.
 [=]
 ```
+
+</details>
 
 ## End of document
