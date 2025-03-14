@@ -880,7 +880,8 @@ static void add_byte_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, ui
     out_bitstream->one_bit_per_byte[starting_index + 7] = b & 0x01u ? 1 : 0;
 }
 static void add_nibble_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, uint8_t nibble, uint8_t starting_index) {
-    assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
+    //assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
+    nibble &= 0x0Fu;
     // transmit the most significant bit first
     out_bitstream->one_bit_per_byte[starting_index + 0] = nibble & 0x08u ? 1 : 0;
     out_bitstream->one_bit_per_byte[starting_index + 1] = nibble & 0x04u ? 1 : 0;
@@ -888,7 +889,7 @@ static void add_nibble_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, 
     out_bitstream->one_bit_per_byte[starting_index + 3] = nibble & 0x01u ? 1 : 0;
 }
 static void add_nibble_parity_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, uint8_t nibble, uint8_t index) {
-    assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
+    //assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
     nibble &= 0x0Fu;
     static const uint16_t parity = 0x6996u;
     out_bitstream->one_bit_per_byte[index] = (parity & (1u << nibble)) == 0 ? 0 : 1;
@@ -1270,6 +1271,19 @@ void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
         success_with_UM2 ? 20 :
         success ? 32 :
         0;
+
+    if (command_parity && success && (data_size == 0)) {
+        em4x70_bitstream_to_send_t to_send = {0};
+        em4x70_bitstream_to_receive_t to_receive = {0};
+        create_bitstream_for_cmd_auth(&to_send, true, etd->rnd, etd->frnd);
+        create_bitstream_for_cmd_um1(&to_send, true);
+        create_bitstream_for_cmd_um2(&to_send, true);
+        create_bitstream_for_cmd_pin(&to_send, true, etd->rnd, etd->pin);
+        create_bitstream_for_cmd_write(&to_send, true, etd->word, etd->address);
+        create_bitstream_for_cmd_id(&to_send, true);
+        to_receive.expected_bitcount = 32;
+        success = send_bitstream_and_read(&to_send, &to_receive);
+    }
 
     // not returning the data to the client about actual length read?
     reply_ng(CMD_LF_EM4X70_INFO, status, tag.data, data_size);
