@@ -835,7 +835,7 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
 }
 
 
-#pragma region    // Bitstream structures / enumerations
+#if  1 // #pragma region    // Bitstream structures / enumerations
 // _Static_assert(EM4X70_MAX_SEND_BITCOUNT    <= 255, "EM4X70_MAX_SEND_BITCOUNT    must fit in uint8_t");
 // _Static_assert(EM4X70_MAX_RECEIVE_BITCOUNT <= 255, "EM4X70_MAX_RECEIVE_BITCOUNT must fit in uint8_t");
 typedef struct _em4x70_bitstream_to_send_t {
@@ -866,8 +866,8 @@ typedef struct _em4x70_bitstream_to_receive_t {
     //       This is based on how the existing code worked.
     uint8_t converted_to_bytes[(EM4X70_MAX_SEND_BITCOUNT / 8) + (EM4X70_MAX_SEND_BITCOUNT % 8 ? 1 : 0)];
 } em4x70_bitstream_to_receive_t;
-#pragma endregion // Bitstream structures / enumerations
-#pragma region    // Create bitstreams for each type of EM4x70 command
+#endif // #pragma endregion // Bitstream structures / enumerations
+#if  1 // #pragma region    // Create bitstreams for each type of EM4x70 command
 static void add_byte_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, uint8_t b, uint8_t starting_index) {
     // transmit the most significant bit first
     out_bitstream->one_bit_per_byte[starting_index + 0] = b & 0x80u ? 1 : 0;
@@ -1051,7 +1051,7 @@ static void create_bitstream_for_cmd_write(em4x70_bitstream_to_send_t * out_bits
     out_bitstream->one_bit_per_byte[33] = 0;
     out_bitstream->bitcount = 34;
 }
-#pragma endregion // Create bitstreams for each type of EM4x70 command
+#endif // #pragma endregion // Create bitstreams for each type of EM4x70 command
 
 // This function should work for the four main commands: ID, UM1, UM2, and AUTH
 // Additional work to support two remaining commands:
