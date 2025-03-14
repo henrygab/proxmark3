@@ -326,7 +326,7 @@ static bool check_pulse_length(uint32_t pulse_tick_length, uint32_t target_tick_
 #if 1 // brute force logging of sent buffer
 
 // e.g., authenticate sends 93 bits (2x RM, 56x rnd, 7x div, 28x frnd) == 2+56+35 = 58+35 = 93
-//
+// NOTE: unlike the bitstream functions, the logs include sending of the two `RM` bits
 #define EM4X70_MAX_LOG_BITS MAX(2u + EM4X70_MAX_SEND_BITCOUNT, 16u + EM4X70_MAX_RECEIVE_BITCOUNT)
 
 typedef struct _em4x70_log_t {
@@ -415,7 +415,6 @@ static void log_received_bits(uint8_t *byte_per_bit_array, size_t array_element_
 }
 #endif // brute force logging of sent buffer
 
-
 // This is the only function that actually toggles modulation for sending bits
 static void em4x70_send_bit(bool bit) {
 
@@ -447,15 +446,403 @@ static void em4x70_send_bit(bool bit) {
     log_sent_bit_end(GetTicks());
 }
 
-/**
- * em4x70_send_command
- * 
- *  sends 4-bits for the command.
- *  when cmd_parity is true, this is a 3-bit command + 1 parity bit
- *  when cmd_parity is false, the command is sent as a 4-bit value
- * 
- */
-// TODO: Add and use this function
+#if  1 // #pragma region    // Bitstream structures / enumerations
+#define EM4X70_MAX_BITSTREAM_BITS MAX(EM4X70_MAX_SEND_BITCOUNT, EM4X70_MAX_RECEIVE_BITCOUNT)
+
+// _Static_assert(EM4X70_MAX_SEND_BITCOUNT    <= 255, "EM4X70_MAX_SEND_BITCOUNT    must fit in uint8_t");
+// _Static_assert(EM4X70_MAX_RECEIVE_BITCOUNT <= 255, "EM4X70_MAX_RECEIVE_BITCOUNT must fit in uint8_t");
+
+typedef struct _em4x70_bitstream_t {
+    // For sending, this is the number of bits to send
+    // For receiving, this is the number of bits expected from tag
+    uint8_t bitcount;
+    // each bit is stored as a uint8_t, storing a single bit as 0 or 1
+    // this avoids bit-shifting in potentially timing-sensitive code,
+    // and ensures the simplest possible code for sending and receiving.
+    uint8_t one_bit_per_byte[EM4X70_MAX_BITSTREAM_BITS];
+} em4x70_bitstream_t;
+typedef struct _em4x70_command_bitstream {
+    uint8_t command; // three-bit value that is encoded as the command ... used to select function to handle sending/receiving data
+    em4x70_bitstream_t to_send;
+    em4x70_bitstream_t to_receive;
+    // Note: Bits are stored in reverse order from transmission
+    //       As a result, the first bit from one_bit_per_byte[0]
+    //       ends up as the least significant bit of the LAST
+    //       byte written.  E.g., if receiving 20 bit g(rn),
+    //       converted_to_bytes[0] will have bits: GRN03..GRN00 0 0 0 0
+    //       converted_to_bytes[1] will have bits: GRN11..GRN04
+    //       converted_to_bytes[2] will have bits: GRN19..GRN12
+    //       Which when treated as a 24-bit value stored little-endian, is:
+    //           g(rn) << 8u
+    //       This is based on how the existing code worked.
+    uint8_t received_data_converted_to_bytes[(EM4X70_MAX_BITSTREAM_BITS / 8) + (EM4X70_MAX_BITSTREAM_BITS % 8 ? 1 : 0)];
+} em4x70_command_bitstream_t;
+
+typedef bool (*bitstream_command_handler_t)(const em4x70_command_bitstream_t * send);
+
+#endif // #pragma endregion // Bitstream structures / enumerations
+#if  1 // #pragma region    // Functions to dump bitstreams to debug output
+static void bitstream_dump_helper(const em4x70_bitstream_t * bitstream, bool is_transmit) {
+    // mimic the log's output format to make comparisons easier
+    char const * const  direction = is_transmit ? "sent >>>" : "recv <<<";
+    if (bitstream->bitcount == 0) {
+        if (g_dbglevel >= DBG_INFO || true) {
+            Dbprintf("%s: no data", direction);
+        }
+    } else if (bitstream->bitcount > 0xFEu) {
+        Dbprintf("INTERNAL ERROR: Too many bits to dump: %d", bitstream->bitcount);
+    } else {
+        char bitstring[EM4X70_MAX_BITSTREAM_BITS + 1];
+        memset(bitstring, 0, sizeof(bitstring));
+        for (uint16_t i = 0; i < bitstream->bitcount; ++i) {
+            bitstring[i] = bitstream->one_bit_per_byte[i] ? '1' : '0';
+        }
+        Dbprintf(
+            "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s",
+            direction,
+            0, 0, 0,
+            bitstream->bitcount,
+            bitstring
+            );
+    }
+}
+static void bitstream_dump(const em4x70_command_bitstream_t * cmd_bitstream) {
+    bitstream_dump_helper(&cmd_bitstream->to_send,    true );
+    bitstream_dump_helper(&cmd_bitstream->to_receive, false);
+}
+#endif // #pragma region    // Functions to dump bitstreams to debug output
+#if  1 // #pragma region    // Functions to send bitstreams, with options to receive data
+
+/// @brief Internal function to send a bitstream to the tag.
+/// @details This function presumes a validated structure, and sends the bitstream without delays, to support timing-sensitive operations.
+/// @param send The details on the bitstream to send to the tag.
+/// @return 
+static bool send_bitstream_internal(const em4x70_bitstream_t * send) {
+    // similar to original send_command_and_read, but using provided bitstream
+    int retries = EM4X70_COMMAND_RETRIES;
+
+    // TIMING SENSITIVE FUNCTION ... Minimize delays after finding the listen window
+    while (retries) {
+        const uint8_t * s = send->one_bit_per_byte;
+        uint8_t sent = 0;
+        retries--;
+        if (find_listen_window(true)) { // `true` will automatically send the two `RM` zero bits
+            // TIMING SENSITIVE SECTION
+            do {
+                em4x70_send_bit(*s);
+                s++;
+                sent++;
+            } while (sent < send->bitcount);
+            return true;
+            // TIMING SENSITIVE SECTION
+        }
+    }
+    return false;
+}
+/// @brief Internal function to send a bitstream to the tag, and immediately read response data.
+/// @param send Bitstream to be sent to the tag
+/// @param recv Buffer to store received data from the tag.
+///             `recv->expected_bitcount` must be initialized to indicate expected bits to receive from the tag.
+/// @return true only if the bitstream was sent and the expected count of bits were received from the tag.
+static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstream) {
+    const em4x70_bitstream_t * send = &command_bitstream->to_send;
+    em4x70_bitstream_t * recv = &command_bitstream->to_receive;
+
+    // Validate the parameters before proceeding
+    bool parameters_valid = true;
+    uint8_t bits_to_decode;
+    do {
+        if (command_bitstream->command == 0) {
+            Dbprintf("No command specified -- coding error?");
+            parameters_valid = false;
+            bits_to_decode = 0;
+        } else if (
+            (command_bitstream->command == EM4X70_COMMAND_ID)  ||
+            (command_bitstream->command == EM4X70_COMMAND_UM1) ||
+            (command_bitstream->command == EM4X70_COMMAND_UM2) ||
+            (command_bitstream->command == EM4X70_COMMAND_AUTH)
+            ) {
+            // These are the four commands that are supported by this function.
+            // Allow these to proceed.
+        } else {
+            Dbprintf("Unknown command: 0x%x (%d)", command_bitstream->command, command_bitstream->command);
+            parameters_valid = false;
+            bits_to_decode = 0;
+        }
+
+        if (send->bitcount == 0) {
+            Dbprintf("No bits to send -- coding error?");
+            parameters_valid = false;
+            bits_to_decode = 0;
+        } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
+            Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
+            parameters_valid = false;
+            bits_to_decode = 0;
+        }
+        if (recv->bitcount == 0) {
+            Dbprintf("No bits to receive -- coding error?");
+            parameters_valid = false;
+            bits_to_decode = 0;
+        } else if (recv->bitcount > EM4X70_MAX_RECEIVE_BITCOUNT) {
+            Dbprintf("Too many bits to receive -- coding error? %d", recv->bitcount);
+            parameters_valid = false;
+            bits_to_decode = 0;
+        } else if (recv->bitcount % 8u != 0u) {
+            // AUTH command receives 20 bits.  Existing code treated this "as if" tag sent 24 bits.
+            // Keep this behavior to minimize the changes to both ARM and client code bases.
+            bits_to_decode = ((recv->bitcount / 8u) + 1u) * 8u;  // round up to nearest byte multiple
+            // _Static_assert(EM4X70_MAX_RECEIVE_BITCOUNT <= (UINT8_MAX - (UINT8_MAX % 8u)), "EM4X70_MAX_RECEIVE_BITCOUNT too large to safely round up within a uint8_t?");
+            // No static assertion, so do this at runtime
+            if (bits_to_decode > EM4X70_MAX_RECEIVE_BITCOUNT) {
+                Dbprintf("Too many bits to decode after adjusting to nearest byte multiple -- coding error? %d --> %d (max %d)", recv->bitcount, bits_to_decode, EM4X70_MAX_RECEIVE_BITCOUNT);
+                parameters_valid = false;
+            } else {
+                Dbprintf("Note: will receive %d bits, but decode as %d bits", recv->bitcount);
+            }
+        } else {
+            // Valid number of bits expected, and an integral multiple of 8 bits ... so decode exactly what was received
+            bits_to_decode = recv->bitcount;
+        }
+    } while (0);
+    // early return when parameter validation fails
+    if (!parameters_valid) {
+        return false;
+    }
+
+
+    // similar to original send_command_and_read, but using provided bitstream
+    int bits_received = 0;
+    
+    // NOTE: reset of log does not track the time first bit is sent.  That occurs
+    //       when the first sent bit is recorded in the log.
+    log_reset();
+
+    // TIMING SENSITIVE SECTION
+    if (send_bitstream_internal(send)) {
+        bits_received = em4x70_receive(recv->one_bit_per_byte, recv->bitcount);
+    }
+    // END OF TIMING SENSITIVE SECTION
+
+    // Convert the received bits into byte array (bits are received in reverse order ... this simplifies reasoning / debugging)
+    bool result = (bits_received == recv->bitcount);
+
+    // output errors via debug prints and dump log as appropriate
+    encoded_bit_array_to_bytes(recv->one_bit_per_byte, bits_received, command_bitstream->received_data_converted_to_bytes);
+    bitstream_dump(command_bitstream);
+    log_dump();
+    if (bits_received == 0) {
+        Dbprintf("No bits received -- tag may not be present?");
+    } else if (bits_received < recv->bitcount) {
+        Dbprintf("Invalid data received length: %d, expected %d", bits_received, recv->bitcount);
+    } else if (bits_received != recv->bitcount) {
+        Dbprintf("INTERNAL ERROR: Expected %d bits, received %d bits (more than maximum allowed)", recv->bitcount, bits_received);
+    }
+
+    // finally return the result of the operation
+    return result;
+}
+#endif // #pragma region    // Functions to send bitstreams, with options to receive data
+#if  1 // #pragma region    // Create bitstreams for each type of EM4x70 command
+static void add_byte_to_bitstream(em4x70_bitstream_t * out_bitstream, uint8_t b, uint8_t starting_index) {
+    // transmit the most significant bit first
+    out_bitstream->one_bit_per_byte[starting_index + 0] = b & 0x80u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 1] = b & 0x40u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 2] = b & 0x20u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 3] = b & 0x10u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 4] = b & 0x08u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 5] = b & 0x04u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 6] = b & 0x02u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 7] = b & 0x01u ? 1 : 0;
+}
+static void add_nibble_to_bitstream(em4x70_bitstream_t * out_bitstream, uint8_t nibble, uint8_t starting_index) {
+    //assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
+    nibble &= 0x0Fu;
+    // transmit the most significant bit first
+    out_bitstream->one_bit_per_byte[starting_index + 0] = nibble & 0x08u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 1] = nibble & 0x04u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 2] = nibble & 0x02u ? 1 : 0;
+    out_bitstream->one_bit_per_byte[starting_index + 3] = nibble & 0x01u ? 1 : 0;
+}
+static void add_nibble_parity_to_bitstream(em4x70_bitstream_t * out_bitstream, uint8_t nibble, uint8_t index) {
+    //assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
+    nibble &= 0x0Fu;
+    static const uint16_t parity = 0x6996u;
+    out_bitstream->one_bit_per_byte[index] = (parity & (1u << nibble)) == 0 ? 0 : 1;
+}
+static void create_bitstream_for_cmd_id(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_ID;
+    if (with_command_parity) { // 0b001'1
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0; 
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    } else { // 0b0'001
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    }
+    out_cmd_bitstream->to_send.bitcount = 4;
+    out_cmd_bitstream->to_receive.bitcount = 32;
+}
+static void create_bitstream_for_cmd_um1(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_UM1;
+    if (with_command_parity) { // 0b010'1
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0; 
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    } else { // 0b0'010
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 0;
+    }
+    out_cmd_bitstream->to_send.bitcount = 4;
+    out_cmd_bitstream->to_receive.bitcount = 32;
+}
+static void create_bitstream_for_cmd_um2(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_UM2;
+    if (with_command_parity) { // 0b111'1
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    } else { // 0b0'111
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    }
+    out_cmd_bitstream->to_send.bitcount = 4;
+    out_cmd_bitstream->to_receive.bitcount = 64;
+}
+static void create_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_AUTH;
+
+    if (with_command_parity) { // 0b011'0
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 0;
+    } else { // 0b0'011
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    }
+
+    // Reader:     [RM][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
+    //
+    // Command is 4 bits : [ 0 ..  3 ]
+    // N is 56 bits      : [ 4 .. 59 ]
+    // 7 bits of 0       : [60 .. 66 ]
+    // f(RN) is 28 bits  : [67 .. 94 ]
+    // Total bits to send: 95 bits
+
+    // Fills in bits at indexes 4 .. 59
+    for (uint_fast8_t i = 0; i < 7; ++i) {
+        uint8_t b = rnd[i];
+        uint8_t idx = 4 + (i * 8u);
+        add_byte_to_bitstream(&out_cmd_bitstream->to_send, b, idx);
+    }
+
+    // Send seven diversity bits ... indexes 60 .. 66
+    // Diversity bits are all zero, and memset() above, so skip
+
+    // Send first 24 bit of f(RN) ... indexes 67 .. 90
+    for (uint_fast8_t i = 0; i < 3; ++i) {
+        uint8_t b = frnd[i];
+        uint8_t idx = 67 + (i * 8u);
+        add_byte_to_bitstream(&out_cmd_bitstream->to_send, b, idx);
+    }
+    // and send the final 4 bits of f(RN) ... indexes 91 .. 94
+    do {
+        uint8_t nibble = (frnd[3] >> 4u) & 0xFu;
+        add_nibble_to_bitstream(&out_cmd_bitstream->to_send, nibble, 91);
+    } while (0);
+    out_cmd_bitstream->to_send.bitcount = 95;
+    out_cmd_bitstream->to_receive.bitcount = 20;
+}
+static void create_bitstream_for_cmd_pin(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *tag_id, const uint32_t pin) {
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_PIN;
+
+    if (with_command_parity) { // 0b100'1
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    } else { // 0b0'100
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 0;
+    }
+
+    // Send tag's ID ... indexes 4 .. 35
+    // e.g., tag_id points to &tag.data[4] ... &tag.data[7]
+    for (uint_fast8_t i = 0; i < 4; i++) {
+        uint8_t b = tag_id[3-i];
+        uint8_t idx = 4 + (i * 8u);
+        add_byte_to_bitstream(&out_cmd_bitstream->to_send, b, idx);
+    }
+
+    // Send the PIN ... indexes 36 .. 67
+    for (uint_fast8_t i = 0; i < 4 ; i++) {
+        // BUGBUG ... Non-portable ... likely depends on little-endian vs. big-endian (presumes little-endian)
+        uint8_t b = (pin >> (i * 8u)) & 0xFFu;
+        uint8_t idx = 36 + (i * 8u);
+        add_byte_to_bitstream(&out_cmd_bitstream->to_send, b, idx);
+    }
+    out_cmd_bitstream->to_send.bitcount = 68;
+    out_cmd_bitstream->to_receive.bitcount = 32;
+}
+static void create_bitstream_for_cmd_write(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, uint16_t new_data, uint8_t address) {
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_WRITE;
+
+    if (with_command_parity) { // 0b101'0
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 0;
+    } else { // 0b0'101
+        out_cmd_bitstream->to_send.one_bit_per_byte[0] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[1] = 1;
+        out_cmd_bitstream->to_send.one_bit_per_byte[2] = 0;
+        out_cmd_bitstream->to_send.one_bit_per_byte[3] = 1;
+    }
+
+    address &= 0x0Fu; // only lower 4 bits can fit into the command
+    // Send address data with its even parity bit ... indexes 4 .. 8
+    add_nibble_to_bitstream(&out_cmd_bitstream->to_send, address, 4);
+    add_nibble_parity_to_bitstream(&out_cmd_bitstream->to_send, address, 8);
+
+    // Send each of the four nibbles of data with their respective parity ... indexes 9 .. 28
+    uint8_t column_parity = 0u;
+    for (uint_fast8_t i = 0; i < 4; ++i) {
+        // indexes 9 .. 13, 14 .. 18, 19 .. 23, 24 .. 28
+        uint8_t nibble = (new_data >> (12u - (i * 4u)));
+        uint8_t idx = 9 + (5 * i);
+        column_parity ^= nibble;
+        add_nibble_to_bitstream(&out_cmd_bitstream->to_send, nibble, idx);
+        add_nibble_parity_to_bitstream(&out_cmd_bitstream->to_send, nibble, idx + 4);
+    }
+    // add the column parity ... indexes 29 .. 32
+    add_nibble_to_bitstream(&out_cmd_bitstream->to_send, column_parity, 29);
+    // add the final zero bit ... index 33
+    out_cmd_bitstream->to_send.one_bit_per_byte[33] = 0;
+    out_cmd_bitstream->to_send.bitcount = 34;
+    out_cmd_bitstream->to_receive.bitcount = 0;
+}
+#endif // #pragma endregion // Create bitstreams for each type of EM4x70 command
+
+#define REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 
 /**
  * em4x70_send_nibble
@@ -463,6 +850,7 @@ static void em4x70_send_bit(bool bit) {
  *  sends 4 bits of data + 1 bit of parity (with_parity)
  *
  */
+REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 static void em4x70_send_nibble(uint8_t nibble, bool add_extra_parity_bit) {
     int parity = 0;
     int msb_bit = 0;
@@ -484,12 +872,14 @@ static void em4x70_send_nibble(uint8_t nibble, bool add_extra_parity_bit) {
     }
 }
 
+REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 static void em4x70_send_byte(uint8_t byte) {
     // Send byte msb first
     for (int i = 0; i < 8; i++)
         em4x70_send_bit((byte >> (7 - i)) & 1);
 }
 
+REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 static void em4x70_send_word(const uint16_t word) {
 
     // Split into nibbles
@@ -514,13 +904,15 @@ static void em4x70_send_word(const uint16_t word) {
     em4x70_send_bit(0);
 }
 
+// TODO: Add similar function that will wait for an ACK/NAK up to a given timeout.
+//       This will allow for more flexibile handling of tag timing in the response.
 static bool check_ack(void) {
     // returns true if signal structue corresponds to ACK, anything else is
     // counted as NAK (-> false)
     // ACK  64 + 64
     // NAK 64 + 48
     if (check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD) &&
-            check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD)) {
+        check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD)) {
         // ACK
         return true;
     }
@@ -530,9 +922,14 @@ static bool check_ack(void) {
 }
 
 // TODO: define and use structs for rnd, frnd, response
+//       Or, just use the structs defined by IDLIB48?
 // log entry/exit point
 static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *response) {
     int result = PM3_ESOFT;
+
+    em4x70_command_bitstream_t auth_cmd;
+    create_bitstream_for_cmd_auth(&auth_cmd, command_parity, rnd, frnd);
+
     log_reset();
 
     if (find_listen_window(true)) {
@@ -578,6 +975,7 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
     }
 
     log_dump();
+    bitstream_dump(&auth_cmd);
     return result;
 }
 
@@ -641,8 +1039,9 @@ static int bruteforce(const uint8_t address, const uint8_t *rnd, const uint8_t *
 
         // Due to performance reason, we only try it once. Therefore you need a very stable RFID communcation.
         if (authenticate(temp_rnd, frnd, auth_resp) == PM3_SUCCESS) {
-            if (g_dbglevel >= DBG_INFO)
+            if (g_dbglevel >= DBG_INFO) {
                 Dbprintf("Authentication success with rnd: %02X%02X%02X%02X%02X%02X%02X", temp_rnd[0], temp_rnd[1], temp_rnd[2], temp_rnd[3], temp_rnd[4], temp_rnd[5], temp_rnd[6]);
+            }
             response[0] = (k >> 8) & 0xFF;
             response[1] = k & 0xFF;
             return PM3_SUCCESS;
@@ -660,6 +1059,10 @@ static int bruteforce(const uint8_t address, const uint8_t *rnd, const uint8_t *
 // log entry/exit point
 static int send_pin(const uint32_t pin) {
     int result = PM3_ESOFT;
+
+    em4x70_command_bitstream_t send_pin_cmd;
+    create_bitstream_for_cmd_pin(&send_pin_cmd, command_parity, &tag.data[4], pin);
+
     log_reset();
 
     // sends pin code for unlocking
@@ -700,12 +1103,15 @@ static int send_pin(const uint32_t pin) {
     }
 
     log_dump();
+    bitstream_dump(&send_pin_cmd);
     return result;
 }
 
 // log entry/exit point
 static int write(const uint16_t word, const uint8_t address) {
     int result = PM3_ESOFT;
+    em4x70_command_bitstream_t write_cmd;
+    create_bitstream_for_cmd_write(&write_cmd, command_parity, word, address);
     log_reset();
 
     // writes <word> to specified <address>
@@ -736,6 +1142,7 @@ static int write(const uint16_t word, const uint8_t address) {
     }
 
     log_dump();
+    bitstream_dump(&write_cmd);
     return result;
 }
 
@@ -808,6 +1215,7 @@ static uint8_t encoded_bit_array_to_byte(const uint8_t *bits, int count_of_bits)
 }
 
 // log entry/exit point
+REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expected_byte_count) {
 
     int retries = EM4X70_COMMAND_RETRIES;
@@ -835,288 +1243,6 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
 }
 
 
-#if  1 // #pragma region    // Bitstream structures / enumerations
-// _Static_assert(EM4X70_MAX_SEND_BITCOUNT    <= 255, "EM4X70_MAX_SEND_BITCOUNT    must fit in uint8_t");
-// _Static_assert(EM4X70_MAX_RECEIVE_BITCOUNT <= 255, "EM4X70_MAX_RECEIVE_BITCOUNT must fit in uint8_t");
-typedef struct _em4x70_bitstream_to_send_t {
-    // The number of bits to be sent
-    uint8_t bitcount;
-    // each bit is stored as a uint8_t, storing a single bit as 0 or 1
-    // this avoids bit-shifting in potentially timing-sensitive code,
-    // and ensures the simplest possible code for sending and receiving.
-    uint8_t one_bit_per_byte[EM4X70_MAX_SEND_BITCOUNT]; // C99 supports flexible array member, but no way to initialize it in static const form.  :(
-} em4x70_bitstream_to_send_t;
-typedef struct _em4x70_bitstream_to_receive_t {
-    // Must be initialized to a maximum count to receive.
-    // The tag must provide exactly this number of bits.
-    uint8_t expected_bitcount;
-    // each bit is stored as a uint8_t, storing a single bit as 0 or 1
-    // this avoids bit-shifting in potentially timing-sensitive code,
-    // and ensures the simplest possible code for sending and receiving.
-    uint8_t one_bit_per_byte[EM4X70_MAX_SEND_BITCOUNT];
-    // Note: Bits are stored in reverse order from transmission
-    //       As a result, the first bit from one_bit_per_byte[0]
-    //       ends up as the least significant bit of the LAST
-    //       byte written.  E.g., if receiving 20 bit g(rn),
-    //       converted_to_bytes[0] will have bits: GRN03..GRN00 0 0 0 0
-    //       converted_to_bytes[1] will have bits: GRN11..GRN04
-    //       converted_to_bytes[2] will have bits: GRN19..GRN12
-    //       Which when treated as a 24-bit value stored little-endian, is:
-    //           g(rn) << 8u
-    //       This is based on how the existing code worked.
-    uint8_t converted_to_bytes[(EM4X70_MAX_SEND_BITCOUNT / 8) + (EM4X70_MAX_SEND_BITCOUNT % 8 ? 1 : 0)];
-} em4x70_bitstream_to_receive_t;
-#endif // #pragma endregion // Bitstream structures / enumerations
-#if  1 // #pragma region    // Create bitstreams for each type of EM4x70 command
-static void add_byte_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, uint8_t b, uint8_t starting_index) {
-    // transmit the most significant bit first
-    out_bitstream->one_bit_per_byte[starting_index + 0] = b & 0x80u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 1] = b & 0x40u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 2] = b & 0x20u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 3] = b & 0x10u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 4] = b & 0x08u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 5] = b & 0x04u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 6] = b & 0x02u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 7] = b & 0x01u ? 1 : 0;
-}
-static void add_nibble_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, uint8_t nibble, uint8_t starting_index) {
-    //assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
-    nibble &= 0x0Fu;
-    // transmit the most significant bit first
-    out_bitstream->one_bit_per_byte[starting_index + 0] = nibble & 0x08u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 1] = nibble & 0x04u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 2] = nibble & 0x02u ? 1 : 0;
-    out_bitstream->one_bit_per_byte[starting_index + 3] = nibble & 0x01u ? 1 : 0;
-}
-static void add_nibble_parity_to_bitstream(em4x70_bitstream_to_send_t * out_bitstream, uint8_t nibble, uint8_t index) {
-    //assert((nibble & 0xF0u) == 0); // only the lower 4 bits should be set
-    nibble &= 0x0Fu;
-    static const uint16_t parity = 0x6996u;
-    out_bitstream->one_bit_per_byte[index] = (parity & (1u << nibble)) == 0 ? 0 : 1;
-}
-static void create_bitstream_for_cmd_id(em4x70_bitstream_to_send_t * out_bitstream, bool with_command_parity) {
-    memset(out_bitstream, 0, sizeof(em4x70_bitstream_to_send_t));
-    if (with_command_parity) { // 0b001'1
-        out_bitstream->one_bit_per_byte[0] = 0; 
-        out_bitstream->one_bit_per_byte[1] = 0;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    } else { // 0b0'001
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 0;
-        out_bitstream->one_bit_per_byte[2] = 0;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    }
-    out_bitstream->bitcount = 4;
-}
-static void create_bitstream_for_cmd_um1(em4x70_bitstream_to_send_t * out_bitstream, bool with_command_parity) {
-    memset(out_bitstream, 0, sizeof(em4x70_bitstream_to_send_t));
-    if (with_command_parity) { // 0b010'1
-        out_bitstream->one_bit_per_byte[0] = 0; 
-        out_bitstream->one_bit_per_byte[1] = 1;
-        out_bitstream->one_bit_per_byte[2] = 0;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    } else { // 0b0'010
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 0;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 0;
-    }
-    out_bitstream->bitcount = 4;
-}
-static void create_bitstream_for_cmd_um2(em4x70_bitstream_to_send_t * out_bitstream, bool with_command_parity) {
-    memset(out_bitstream, 0, sizeof(em4x70_bitstream_to_send_t));
-    if (with_command_parity) { // 0b111'1
-        out_bitstream->one_bit_per_byte[0] = 1;
-        out_bitstream->one_bit_per_byte[1] = 1;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    } else { // 0b0'111
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 1;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    }
-    out_bitstream->bitcount = 4;
-}
-static void create_bitstream_for_cmd_auth(em4x70_bitstream_to_send_t * out_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
-    memset(out_bitstream, 0, sizeof(em4x70_bitstream_to_send_t));
-    if (with_command_parity) { // 0b011'0
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 1;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 0;
-    } else { // 0b0'011
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 0;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    }
-
-    // Reader:     [RM][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
-    //
-    // Command is 4 bits : [ 0 ..  3 ]
-    // N is 56 bits      : [ 4 .. 59 ]
-    // 7 bits of 0       : [60 .. 66 ]
-    // f(RN) is 28 bits  : [67 .. 94 ]
-    // Total bits to send: 95 bits
-
-    // Fills in bits at indexes 4 .. 59
-    for (uint_fast8_t i = 0; i < 7; ++i) {
-        uint8_t b = rnd[i];
-        uint8_t idx = 4 + (i * 8u);
-        add_byte_to_bitstream(out_bitstream, b, idx);
-    }
-
-    // Send seven diversity bits ... indexes 60 .. 66
-    // Diversity bits are all zero, and memset() above, so skip
-
-    // Send first 24 bit of f(RN) ... indexes 67 .. 90
-    for (uint_fast8_t i = 0; i < 3; ++i) {
-        uint8_t b = frnd[i];
-        uint8_t idx = 67 + (i * 8u);
-        add_byte_to_bitstream(out_bitstream, b, idx);
-    }
-    // and send the final 4 bits of f(RN) ... indexes 91 .. 94
-    do {
-        uint8_t nibble = (frnd[3] >> 4u) & 0xFu;
-        add_nibble_to_bitstream(out_bitstream, nibble, 91);
-    } while (0);
-    out_bitstream->bitcount = 95;
-}
-static void create_bitstream_for_cmd_pin(em4x70_bitstream_to_send_t * out_bitstream, bool with_command_parity, const uint8_t *tag_id, const uint32_t pin) {
-    memset(out_bitstream, 0, sizeof(em4x70_bitstream_to_send_t));
-
-    if (with_command_parity) { // 0b100'1
-        out_bitstream->one_bit_per_byte[0] = 1;
-        out_bitstream->one_bit_per_byte[1] = 0;
-        out_bitstream->one_bit_per_byte[2] = 0;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    } else { // 0b0'100
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 1;
-        out_bitstream->one_bit_per_byte[2] = 0;
-        out_bitstream->one_bit_per_byte[3] = 0;
-    }
-
-    // Send tag's ID ... indexes 4 .. 35
-    // e.g., tag_id points to &tag.data[4] ... &tag.data[7]
-    for (uint_fast8_t i = 0; i < 4; i++) {
-        uint8_t b = tag_id[3-i];
-        uint8_t idx = 4 + (i * 8u);
-        add_byte_to_bitstream(out_bitstream, b, idx);
-    }
-
-    // Send the PIN ... indexes 36 .. 67
-    for (uint_fast8_t i = 0; i < 4 ; i++) {
-        // BUGBUG ... Non-portable ... likely depends on little-endian vs. big-endian (presumes little-endian)
-        uint8_t b = (pin >> (i * 8u)) & 0xFFu;
-        uint8_t idx = 36 + (i * 8u);
-        add_byte_to_bitstream(out_bitstream, b, idx);
-    }
-    out_bitstream->bitcount = 68;
-}
-static void create_bitstream_for_cmd_write(em4x70_bitstream_to_send_t * out_bitstream, bool with_command_parity, uint16_t new_data, uint8_t address) {
-    memset(out_bitstream, 0, sizeof(em4x70_bitstream_to_send_t));
-    if (with_command_parity) { // 0b101'0
-        out_bitstream->one_bit_per_byte[0] = 1;
-        out_bitstream->one_bit_per_byte[1] = 0;
-        out_bitstream->one_bit_per_byte[2] = 1;
-        out_bitstream->one_bit_per_byte[3] = 0;
-    } else { // 0b0'101
-        out_bitstream->one_bit_per_byte[0] = 0;
-        out_bitstream->one_bit_per_byte[1] = 1;
-        out_bitstream->one_bit_per_byte[2] = 0;
-        out_bitstream->one_bit_per_byte[3] = 1;
-    }
-
-    address &= 0x0Fu; // only lower 4 bits can fit into the command
-    // Send address data with its even parity bit ... indexes 4 .. 8
-    add_nibble_to_bitstream(out_bitstream, address, 4);
-    add_nibble_parity_to_bitstream(out_bitstream, address, 8);
-
-    // Send each of the four nibbles of data with their respective parity ... indexes 9 .. 28
-    uint8_t column_parity = 0u;
-    for (uint_fast8_t i = 0; i < 4; ++i) {
-        // indexes 9 .. 13, 14 .. 18, 19 .. 23, 24 .. 28
-        uint8_t nibble = (new_data >> (12u - (i * 4u)));
-        uint8_t idx = 9 + (5 * i);
-        column_parity ^= nibble;
-        add_nibble_to_bitstream(out_bitstream, nibble, idx);
-        add_nibble_parity_to_bitstream(out_bitstream, nibble, idx + 4);
-    }
-    // add the column parity ... indexes 29 .. 32
-    add_nibble_to_bitstream(out_bitstream, column_parity, 29);
-    // add the final zero bit ... index 33
-    out_bitstream->one_bit_per_byte[33] = 0;
-    out_bitstream->bitcount = 34;
-}
-#endif // #pragma endregion // Create bitstreams for each type of EM4x70 command
-
-// This function should work for the four main commands: ID, UM1, UM2, and AUTH
-// Additional work to support two remaining commands:
-// SEND_PIN -- delay, wait for ACK, delay, wait for 32-bits of data
-// WRITE    -- delay, wait for ACK, delay, wait for ACK (no data)
-static bool send_bitstream_and_read(const em4x70_bitstream_to_send_t * send, em4x70_bitstream_to_receive_t * recv) {
-    // Validate the parameters provided
-    if (send->bitcount == 0) {
-        Dbprintf("No bits to send -- coding error?");
-        return false;
-    } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
-        Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
-        return false;
-    } else if (recv->expected_bitcount == 0) {
-        Dbprintf("No bits to receive -- coding error?");
-        return false;
-    } else if (recv->expected_bitcount > EM4X70_MAX_RECEIVE_BITCOUNT) {
-        Dbprintf("Too many bits to receive -- coding error? %d", recv->expected_bitcount);
-        return false;
-    }
-
-    uint8_t bits_to_decode = recv->expected_bitcount;
-    // hack for grn (20 bits) ... because decoding into bytes requires multiple of 8 bits
-    if (bits_to_decode % 8u != 0u) {
-        bits_to_decode = ((bits_to_decode / 8u) + 1u) * 8u;
-        Dbprintf("Note: will receive %d bits, but decode as %d bits", recv->expected_bitcount, bits_to_decode);
-    }
-    if (bits_to_decode > EM4X70_MAX_RECEIVE_BITCOUNT) {
-        Dbprintf("Too many bits to decode after adjusting to nearest byte multiple -- coding error? %d", bits_to_decode);
-        return false;
-    }
-
-    // similar to original send_command_and_read, but using provided bitstream
-    int retries = EM4X70_COMMAND_RETRIES;
-    bool result = false;
-    while (retries) {
-        retries--;
-        log_reset();
-        if (find_listen_window(true)) {
-            // TIMING SENSITIVE SECTION
-            const uint8_t * s = send->one_bit_per_byte;
-            uint8_t sent = 0;
-            do {
-                em4x70_send_bit(*s);
-                s++;
-                sent++;
-            } while (sent < send->bitcount);
-            
-            int len = em4x70_receive(recv->one_bit_per_byte, recv->expected_bitcount);
-            if (len < recv->expected_bitcount) {
-                // timing sensitivity ends when error occurs, so OK to use Dbprintf here
-                Dbprintf("Invalid data received length: %d, expected %d", len, recv->expected_bitcount);
-            } else {
-                encoded_bit_array_to_bytes(recv->one_bit_per_byte, len, recv->converted_to_bytes);
-                result = true;
-            }
-            break;
-            // TIMING SENSITIVE SECTION
-        }
-    }
-    log_dump();
-    return result;
-}
-
-
 
 /**
  * em4x70_read_id
@@ -1124,7 +1250,11 @@ static bool send_bitstream_and_read(const em4x70_bitstream_to_send_t * send, em4
  *  read pre-programmed ID (4 bytes)
  */
 static bool em4x70_read_id(void) {
-    return send_command_and_read(EM4X70_COMMAND_ID, &tag.data[4], 4);
+    em4x70_command_bitstream_t read_id_cmd;
+    create_bitstream_for_cmd_id(&read_id_cmd, command_parity);
+    bool result = send_command_and_read(EM4X70_COMMAND_ID, &tag.data[4], 4);
+    bitstream_dump(&read_id_cmd);
+    return result;
 }
 
 /**
@@ -1133,7 +1263,11 @@ static bool em4x70_read_id(void) {
  *  read user memory 1 (4 bytes including lock bits)
  */
 static bool em4x70_read_um1(void) {
-    return send_command_and_read(EM4X70_COMMAND_UM1, &tag.data[0], 4);
+    em4x70_command_bitstream_t read_um1_cmd;
+    create_bitstream_for_cmd_um1(&read_um1_cmd, command_parity);
+    bool result = send_command_and_read(EM4X70_COMMAND_UM1, &tag.data[0], 4);
+    bitstream_dump(&read_um1_cmd);
+    return result;
 }
 
 /**
@@ -1142,11 +1276,15 @@ static bool em4x70_read_um1(void) {
  *  read user memory 2 (8 bytes)
  */
 static bool em4x70_read_um2(void) {
-    return send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
+    em4x70_command_bitstream_t read_um2_cmd;
+    create_bitstream_for_cmd_um2(&read_um2_cmd, command_parity);
+    bool result = send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
+    bitstream_dump(&read_um2_cmd);
+    return result;
 }
 static bool find_em4x70_tag(void) {
     // function is used to check whether a tag on the proxmark is an
-    // EM4170 tag or not -> speed up "lf search" process
+    // EM4x70 tag or not -> speed up "lf search" process
     return find_listen_window(false);
 }
 
@@ -1273,16 +1411,16 @@ void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
         0;
 
     if (command_parity && success && (data_size == 0)) {
-        em4x70_bitstream_to_send_t to_send = {0};
-        em4x70_bitstream_to_receive_t to_receive = {0};
-        create_bitstream_for_cmd_auth(&to_send, true, etd->rnd, etd->frnd);
-        create_bitstream_for_cmd_um1(&to_send, true);
-        create_bitstream_for_cmd_um2(&to_send, true);
-        create_bitstream_for_cmd_pin(&to_send, true, etd->rnd, etd->pin);
-        create_bitstream_for_cmd_write(&to_send, true, etd->word, etd->address);
-        create_bitstream_for_cmd_id(&to_send, true);
-        to_receive.expected_bitcount = 32;
-        success = send_bitstream_and_read(&to_send, &to_receive);
+        REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
+        em4x70_command_bitstream_t command_bitstream = {0};
+        create_bitstream_for_cmd_auth(&command_bitstream, true, etd->rnd, etd->frnd);
+        create_bitstream_for_cmd_um1(&command_bitstream, true);
+        create_bitstream_for_cmd_um2(&command_bitstream, true);
+        create_bitstream_for_cmd_pin(&command_bitstream, true, etd->rnd, etd->pin);
+        create_bitstream_for_cmd_write(&command_bitstream, true, etd->word, etd->address);
+        create_bitstream_for_cmd_id(&command_bitstream, false);
+        success = send_bitstream_and_read(&command_bitstream);
+        bitstream_dump(&command_bitstream);
     }
 
     // not returning the data to the client about actual length read?
@@ -1500,9 +1638,9 @@ void em4x70_write_key(const em4x70_data_t *etd, bool ledcontrol) {
             // The client now has support for test authentication after
             // writing a new key, thus allowing to verify that the new
             // key was written correctly.  This is what the datasheet
-            // suggests.   Not currently implemented in the firmware,
-            // although ID48LIB has no dependencies that would prevent
-            // use within the firmware layer.
+            // suggests.   Not currently implemented in the firmware.
+            // ID48LIB has no dependencies that would prevent this from
+            // being implemented directly within the firmware layer...
         }
     }
 
