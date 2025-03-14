@@ -498,10 +498,11 @@ static void bitstream_dump_helper(const em4x70_bitstream_t * bitstream, bool is_
             bitstring[i] = bitstream->one_bit_per_byte[i] ? '1' : '0';
         }
         Dbprintf(
-            "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s",
+            "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s%s",
             direction,
             0, 0, 0,
-            bitstream->bitcount,
+            bitstream->bitcount + (is_transmit ? 2u : 0u), // add the two RM bits to transmitted data
+            is_transmit ? "00" : "", // add the two RM bits to transmitted data
             bitstring
             );
     }
@@ -823,13 +824,25 @@ static void create_bitstream_for_cmd_write(em4x70_command_bitstream_t * out_cmd_
     add_nibble_to_bitstream(&out_cmd_bitstream->to_send, address, 4);
     add_nibble_parity_to_bitstream(&out_cmd_bitstream->to_send, address, 8);
 
+
+    // Split into nibbles ... Being explicit here because
+    // the client sent a uint16_t, but the order of the bytes
+    // is reversed relative to what is going to be sent.
+    // Thus, must swap the bytes before splitting into nibbles.
+    // TODO: Fix client and arm code to only use byte arrays.....
+    uint8_t nibbles[4] = {
+        (new_data >>  4) & 0xFu,
+        (new_data >>  0) & 0xFu,
+        (new_data >> 12) & 0xFu,
+        (new_data >>  8) & 0xFu,
+    };
+
     // Send each of the four nibbles of data with their respective parity ... indexes 9 .. 28
-    uint8_t column_parity = 0u;
+    uint8_t column_parity = nibbles[0] ^ nibbles[1] ^ nibbles[2] ^ nibbles[3];
     for (uint_fast8_t i = 0; i < 4; ++i) {
         // indexes 9 .. 13, 14 .. 18, 19 .. 23, 24 .. 28
-        uint8_t nibble = (new_data >> (12u - (i * 4u)));
+        uint8_t nibble = nibbles[i];
         uint8_t idx = 9 + (5 * i);
-        column_parity ^= nibble;
         add_nibble_to_bitstream(&out_cmd_bitstream->to_send, nibble, idx);
         add_nibble_parity_to_bitstream(&out_cmd_bitstream->to_send, nibble, idx + 4);
     }
