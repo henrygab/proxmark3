@@ -537,7 +537,7 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
 
     if (find_listen_window(true)) {
 
-        em4x70_send_nibble(EM4X70_COMMAND_AUTH, true);
+        em4x70_send_nibble(EM4X70_COMMAND_AUTH, false);
 
         // Send 56-bit Random number
         for (int i = 0; i < 7; i++) {
@@ -813,8 +813,8 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
     int retries = EM4X70_COMMAND_RETRIES;
     bool result = false;
 
-    log_reset();
     while (retries) { // retry is only for finding the listen window .. not actual command!
+        log_reset();
         retries--;
         if (find_listen_window(true)) {
             uint8_t bits[EM4X70_MAX_RECEIVE_BITCOUNT] = {0};
@@ -862,7 +862,6 @@ static bool em4x70_read_um1(void) {
 static bool em4x70_read_um2(void) {
     return send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
 }
-
 static bool find_em4x70_tag(void) {
     // function is used to check whether a tag on the proxmark is an
     // EM4170 tag or not -> speed up "lf search" process
@@ -965,6 +964,7 @@ static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
 void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
 
     bool success = false;
+    bool success_with_UM2 = false;
 
     // Support tags with and without command parity bits
     command_parity = etd->parity;
@@ -974,14 +974,24 @@ void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
 
     // Find the Tag
     if (get_signalproperties() && find_em4x70_tag()) {
-        // Read ID, UM1 and UM2
-        success = em4x70_read_id() && em4x70_read_um1() && em4x70_read_um2();
+        // Read ID and UM1 (both em4070 and em4170)
+        success = em4x70_read_id() && em4x70_read_um1();
+        if (success) {
+            // em4170 also has UM2, V4070 does not (e.g., 1998 Porsche Boxster)
+            success_with_UM2 = em4x70_read_um2();
+        }
     }
 
     StopTicks();
     lf_finalize(ledcontrol);
     int status = success ? PM3_SUCCESS : PM3_ESOFT;
-    reply_ng(CMD_LF_EM4X70_INFO, status, tag.data, sizeof(tag.data));
+    size_t data_size =
+        success_with_UM2 ? 20 :
+        success ? 32 :
+        0;
+
+    // not returning the data to the client about actual length read?
+    reply_ng(CMD_LF_EM4X70_INFO, status, tag.data, data_size);
 }
 
 void em4x70_write(const em4x70_data_t *etd, bool ledcontrol) {
