@@ -56,10 +56,11 @@ static bool command_parity = true;
 #define EM4X70_T_READ_HEADER_LEN             16 // Read header length (16 bit periods)
 
 #define EM4X70_COMMAND_RETRIES               5 // Attempts to send/read command
-#define EM4X70_MAX_RECEIVE_LENGTH           96 // Maximum bits to expect from any command
+#define EM4X70_MAX_SEND_BITCOUNT            96u // Authentication == CMD(4) + NONCE(56) + DIVERGENCY(7) + FRND(28) == 6 + 56 + 35 == 56 + 41 == 95 bits (NOTE: RM(2) is handled as part of LIW detection)
+#define EM4X70_MAX_RECEIVE_BITCOUNT         64u // Maximum bits to receive in response to any command (NOTE: This is EXCLUDING the 16-bit header of 0b1111'1111'1111'0000)
 #endif // Calculation of ticks for timing functions
 
-#if 1 // EM4x70 Command IDs
+#if 1 // EM4x70 Command IDs and notes
 /**
  * These IDs are from the EM4170 datasheet.
  * Some versions of the chip require a
@@ -67,12 +68,114 @@ static bool command_parity = true;
  * The command is thus stored only in the
  * three least significant bits (mask 0x07).
  */
-#define EM4X70_COMMAND_ID                   0x01
-#define EM4X70_COMMAND_UM1                  0x02
-#define EM4X70_COMMAND_AUTH                 0x03
-#define EM4X70_COMMAND_PIN                  0x04
-#define EM4X70_COMMAND_WRITE                0x05
-#define EM4X70_COMMAND_UM2                  0x07
+//                                               // w/o parity      with parity
+#define EM4X70_COMMAND_ID                   0x01 // 0b0001      --> 0b001'1
+#define EM4X70_COMMAND_UM1                  0x02 // 0b0010      --> 0b010'1
+#define EM4X70_COMMAND_AUTH                 0x03 // 0b0011      --> 0b011'0
+#define EM4X70_COMMAND_PIN                  0x04 // 0b0100      --> 0b100'1
+#define EM4X70_COMMAND_WRITE                0x05 // 0b0101      --> 0b101'0
+#define EM4X70_COMMAND_UM2                  0x07 // 0b0111      --> 0b111'1
+
+// Command behaviors and bit counts for each direction:
+//
+// The command IDs and behaviors are the same for both EM4170 and V4070/EM4070,
+// However, V4070/EM4070 does not support sending a PIN, reading UM2, and WRITE
+// is limited to block 0..9 (other blocks don't exist).
+// NOTE: It's possible that original V4070/EM4070 tags may have been manufactured
+//       with all ten blocks being OTP (one-time-programmable)?
+//
+// There are only 6 commands in total.
+// Each of the six commands has two variants (i.e., with and w/o command parity).
+//
+// Four of the commands send a predetermined bitstream, immediately synchronize
+// on the tag sending the header, and then receive a number of bits from the tag:
+// 
+// #define EM4X70_COMMAND_ID                   0x01 // 0b0001      --> 0b001'1
+//    Tag:  [LIW]           [Header][ID₃₁..ID₀][LIW]
+// Reader:     [RM][Command]
+//  Bits Sent: RM     +  4 bits
+//  Bits Recv: Header + 32 bits
+// 
+// #define EM4X70_COMMAND_UM1                  0x02 // 0b0010      --> 0b010'1
+//    Tag:  [LIW]           [Header][LB₁, LB₀, UM1₂₉..UM1₀][LIW]
+// Reader:     [RM][Command]
+//  Bits Sent: RM     +  4 bits
+//  Bits Recv: Header + 32 bits
+//
+// #define EM4X70_COMMAND_UM2                  0x07 // 0b0111      --> 0b111'1
+//    Tag:  [LIW]           [Header][UM2₆₃..UM2₀][LIW]
+// Reader:     [RM][Command]
+//  Bits Sent: RM     +  4 bits
+//  Bits Recv: Header + 64 bits
+//
+// #define EM4X70_COMMAND_AUTH                 0x03 // 0b0011      --> 0b011'0
+//    Tag:  [LIW]                                              [Header][g(RN)₁₉..RN₀][LIW]
+// Reader:     [RM][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
+//  Bits Sent: RM     + 95 bits
+//  Bits Recv: Header + 20 bits
+//
+// The SEND_PIN command requires the tag ID to be retrieved first,
+// then can sends a predetermined bitstream.  Unlike the above, there
+// is then a wait time before the tag sends a first ACK.  Then a second
+// wait time before synchronizing on the tag sending the header, and
+// receive a number of bits from the tag:
+//
+// #define EM4X70_COMMAND_PIN                  0x04 // 0b0100      --> 0b100'1
+//    Tag:  [LIW]                                    ..  [ACK]  ..  [Header][ID₃₁..ID₀][LIW]
+// Reader:     [RM][Command][ID₃₁..ID₀][Pin₃₁..Pin₀] ..         ..
+//  Bits Sent: RM     + 68 bits
+//  Bits Recv: Header + 32 bits
+//
+// The WRITE command, given an address to write (A) and 16 bits of data (D),
+// sends a predetermined bitstream.  Unlike the four basic commands, there
+// is then a wait time before the tag sends a first ACK, and then a second
+// wait time before the tag sends a second ACK.  No data is received from
+// the tag ... just the two ACKs.
+//
+// #define EM4X70_COMMAND_WRITE                0x05 // 0b0101      --> 0b101'0
+//    Tag:  [LIW]                                    ..  [ACK]  ..  [ACK][LIW]
+// Reader:     [RM][Command][A₃..A₀,Ap][Data5x5]     ..         ..
+//  Bits Sent: RM     + 34 bits
+//  Bits Recv: !!!!!!!! NONE !!!!!!!!
+//
+// Thus, only need to define three sequences of interaction with the tag.
+// Moreover, the reader can pre-generate its entire bitstream before any bits are sent.
+
+// Validation of newly-written data depends on the block(s) written:
+// * UM1 -- Read UM1 from the tag
+// * ID  -- Read ID  from the tag
+// * UM2 -- Read UM2 from the tag
+// * KEY -- attempt authentication with the new key
+// * PIN -- unlock the tag using the new PIN
+//   TODO: Determine if sending PIN will report success, even if the tag is already unlocked?
+
+// Auto-detect tag variant and command parity?
+// EM4070/V4070 does not contain UM2 or PIN, and UM1 may be OTP (one-time programmable)
+// EM4170 added Pin and UM2, and UM1
+// 
+// Thus, to check for overlap, need only check the first three commands with parity:
+// | CMD   |  P? | Bits     | Safe? | Overlaps With    | Notes
+// |-------|-----|----------|-------|------------------|------------
+// | ID    | No  | `0b0001` | Yes   | None!            | Safe ... indicates no parity if successful
+// | UM1   | No  | `0b0010` | Yes   | None!            | Safe ... indicates no parity if successful
+// | AUTH  | No  | `0b0011` | Yes   | ID w/parity      | cannot test for no-parity, but safe to try ID w/parity
+// | WRITE | No  | `0b0101` | NO    |                  | DO NOT USE ... just in case
+// | PIN   | No  | `0b0100` | N/A   |                  | DO NOT USE ... just in case
+// | UM2   | No  | `0b0111` | Yes   | None!            | Safe ... indicates no parity AND EM4170 tag type
+// | ID    | Yes | `0b0011` | Yes   | Auth w/o Parity  | Safe to try ... indicates parity if successful
+// | UM1   | Yes | `0b0101` | Yes   | Write w/o Parity | 
+// | AUTH  | Yes | `0b0110` | Yes   | None!            | Not testable
+// | WRITE | Yes | `0b1010` | NO    | None!            | DO NOT USE ... just in case
+// | PIN   | Yes | `0b1001` | N/A   | None!            | DO NOT USE ... just in case
+// | UM2   | Yes | `0b1111` | Yes   | None!            | Safe ... indicates parity AND EM4170 tag type
+//
+// Thus, the following sequence of commands should auto-detect both the type of tag,
+// as well as whether it requires command parity or not:
+// 1. If   UM2 w/o  parity -- If successful, command parity is NOT required, Type is EM4170
+// 2. Elif UM2 with parity -- If successful, command parity IS     required, Type is EM4170
+// 3. Elif ID  w/o  parity -- If successful, command parity is NOT required, Type is EM4070/V4070
+// 4. Elif ID  with parity -- If successful, command parity IS     required, Type is EM4070/V4070
+// 5. Else                 -- Error ... no tag or other error?
 #endif // EM4x70 Command IDs
 
 // Constants used to determine high/low state of signal
@@ -223,7 +326,8 @@ static bool check_pulse_length(uint32_t pulse_tick_length, uint32_t target_tick_
 #if 1 // brute force logging of sent buffer
 
 // e.g., authenticate sends 93 bits (2x RM, 56x rnd, 7x div, 28x frnd) == 2+56+35 = 58+35 = 93
-#define EM4X70_MAX_LOG_BITS MAX(EM4X70_MAX_RECEIVE_LENGTH, 100)
+//
+#define EM4X70_MAX_LOG_BITS MAX(2u + EM4X70_MAX_SEND_BITCOUNT, 16u + EM4X70_MAX_RECEIVE_BITCOUNT)
 
 typedef struct _em4x70_log_t {
     uint32_t start_tick;
@@ -456,7 +560,7 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
         em4x70_send_nibble((frnd[3] >> 4) & 0xf, false);
 
         // Receive header, 20-bit g(RN), LIW
-        uint8_t grnd[EM4X70_MAX_RECEIVE_LENGTH] = {0};
+        uint8_t grnd[EM4X70_MAX_RECEIVE_BITCOUNT] = {0};
         int num = em4x70_receive(grnd, 20);
         if (num < 20) {
             if (g_dbglevel >= DBG_EXTENDED) {
@@ -583,7 +687,7 @@ static int send_pin(const uint32_t pin) {
             // <w> Writes Lock Bits
             WaitTicks(EM4X70_T_TAG_WEE);
             // <-- Receive header + ID
-            uint8_t tag_id[EM4X70_MAX_RECEIVE_LENGTH];
+            uint8_t tag_id[EM4X70_MAX_RECEIVE_BITCOUNT];
             int count_of_bits_received  = em4x70_receive(tag_id, 32);
             if (count_of_bits_received < 32) {
                 Dbprintf("Invalid ID Received");
@@ -647,18 +751,18 @@ static bool find_listen_window(bool command) {
         96 ( 64 + 32 )
         64 ( 32 + 16 +16 )*/
 
-        if (check_pulse_length(get_pulse_length(RISING_EDGE), (2 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_HALF_PERIOD) &&
-                check_pulse_length(get_pulse_length(RISING_EDGE), (2 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_HALF_PERIOD) &&
-                check_pulse_length(get_pulse_length(FALLING_EDGE), (2 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_FULL_PERIOD) &&
-                check_pulse_length(get_pulse_length(FALLING_EDGE),         EM4X70_T_TAG_FULL_PERIOD + (2 * EM4X70_T_TAG_HALF_PERIOD))) {
+        if (check_pulse_length(get_pulse_length(RISING_EDGE),  (2 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_HALF_PERIOD) &&
+            check_pulse_length(get_pulse_length(RISING_EDGE),  (2 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_HALF_PERIOD) &&
+            check_pulse_length(get_pulse_length(FALLING_EDGE), (2 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_FULL_PERIOD) &&
+            check_pulse_length(get_pulse_length(FALLING_EDGE), (1 * EM4X70_T_TAG_FULL_PERIOD) + EM4X70_T_TAG_FULL_PERIOD)) {
 
             if (command) {
                 /* Here we are after the 64 duration edge.
-                    *   em4170 says we need to wait about 48 RF clock cycles.
-                    *   depends on the delay between tag and us
-                    *
-                    *   I've found between 4-5 quarter periods (32-40) works best
-                    */
+                 *   em4170 says we need to wait about 48 RF clock cycles.
+                 *   depends on the delay between tag and us
+                 *
+                 *   I've found between 4-5 quarter periods (32-40) works best
+                 */
                 WaitTicks(4 * EM4X70_T_TAG_QUARTER_PERIOD);
                 // Send RM Command
                 em4x70_send_bit(0);
@@ -713,7 +817,7 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
     while (retries) { // retry is only for finding the listen window .. not actual command!
         retries--;
         if (find_listen_window(true)) {
-            uint8_t bits[EM4X70_MAX_RECEIVE_LENGTH] = {0};
+            uint8_t bits[EM4X70_MAX_RECEIVE_BITCOUNT] = {0};
             size_t out_length_bits = expected_byte_count * 8;
             em4x70_send_nibble(command, command_parity);
             int len = em4x70_receive(bits, out_length_bits);
@@ -777,7 +881,7 @@ static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
     //   12 Manchester 1's (may miss some during settle period)
     //    4 Manchester 0's
 
-    // Skip a few leading 1's as it could be noisy
+    // Skip about half of the leading 1's as signal could start off noisy
     WaitTicks(6 * EM4X70_T_TAG_FULL_PERIOD);
 
     // wait until we get the transition from 1's to 0's which is 1.5 full windows
@@ -794,7 +898,7 @@ static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
         return 0;
     }
 
-    // Skip next 3 0's, header check consumes the first 0
+    // Skip next 3 0's, (the header check above consumed the first 0)
     for (int i = 0; i < 3; i++) {
         // If pulse length is not 1 bit, then abort early
         if (!check_pulse_length(get_pulse_length(edge), EM4X70_T_TAG_FULL_PERIOD)) {
@@ -856,8 +960,6 @@ static int em4x70_receive(uint8_t *bits, size_t maximum_bits_to_read) {
 
     return bit_pos;
 }
-
-
 
 // CLIENT ENTRY POINTS
 void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
