@@ -643,8 +643,8 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
 
     // output errors via debug prints and dump log as appropriate
     encoded_bit_array_to_bytes(recv->one_bit_per_byte, bits_received, command_bitstream->received_data_converted_to_bytes);
-    bitstream_dump(command_bitstream);
     log_dump();
+    bitstream_dump(command_bitstream);
     if (bits_received == 0) {
         Dbprintf("No bits received -- tag may not be present?");
     } else if (bits_received < recv->bitcount) {
@@ -1343,7 +1343,11 @@ static bool em4x70_read_id(void) {
     generator->id(&read_id_cmd, command_parity);
 
     bool result = send_command_and_read(EM4X70_COMMAND_ID, &tag.data[4], 4);
-    bitstream_dump(&read_id_cmd);
+
+    bool result2 = send_bitstream_and_read(&read_id_cmd);
+    if (result && !result2) {
+        Dbprintf("Read ID worked using old method, failed using new method.");
+    }
     return result;
 }
 
