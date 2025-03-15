@@ -1046,13 +1046,6 @@ static void em4x70_send_nibble(uint8_t nibble, bool add_extra_parity_bit) {
 }
 
 REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
-static void em4x70_send_byte(uint8_t byte) {
-    // Send byte msb first
-    for (int i = 0; i < 8; i++)
-        em4x70_send_bit((byte >> (7 - i)) & 1);
-}
-
-REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 static void em4x70_send_word(const uint16_t word) {
 
     // Split into nibbles
@@ -1173,58 +1166,12 @@ static int bruteforce(const uint8_t address, const uint8_t *rnd, const uint8_t *
 
 // log entry/exit point
 static int send_pin(const uint32_t pin) {
-    int result = PM3_ESOFT;
-
     em4x70_command_bitstream_t send_pin_cmd;
     const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
     generator->pin(&send_pin_cmd, command_parity, &tag.data[4], pin);
 
-    log_reset();
-
-    // sends pin code for unlocking
-    if (find_listen_window(true)) {
-
-        // send PIN command
-        em4x70_send_nibble(EM4X70_COMMAND_PIN, true);
-
-        // --> Send TAG ID (bytes 4-7)
-        for (int i = 0; i < 4; i++) {
-            em4x70_send_byte(tag.data[7 - i]);
-        }
-
-        // --> Send PIN
-        for (int i = 0; i < 4 ; i++) {
-            em4x70_send_byte((pin >> (i * 8)) & 0xff);
-        }
-
-        // Wait TWALB (write access lock bits)
-        WaitTicks(EM4X70_T_TAG_TWALB);
-
-        // <-- Receive ACK
-        if (check_ack()) {
-
-            // <w> Writes Lock Bits
-            WaitTicks(EM4X70_T_TAG_WEE);
-            // <-- Receive header + ID
-            uint8_t tag_id[EM4X70_MAX_RECEIVE_BITCOUNT];
-            int count_of_bits_received  = em4x70_receive(tag_id, 32);
-            if (count_of_bits_received < 32) {
-                Dbprintf("Invalid ID Received");
-                result = PM3_ESOFT;
-            } else {
-                encoded_bit_array_to_bytes(tag_id, count_of_bits_received, &tag.data[4]);
-                result = PM3_SUCCESS;
-            }
-        }
-    }
-    log_dump();
-
-    // try using the new version of the function
-    bool result2 = send_bitstream_wait_ack_wait_read(&send_pin_cmd);
-    if (result == PM3_SUCCESS && !result2) {
-        Dbprintf("Old method worked, but new method failed?");
-    }
-    return result;
+    bool result = send_bitstream_wait_ack_wait_read(&send_pin_cmd);
+    return result ? PM3_SUCCESS : PM3_ESOFT;
 }
 
 // log entry/exit point
