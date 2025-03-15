@@ -748,6 +748,68 @@ static bool send_bitstream_wait_ack_wait_read(em4x70_command_bitstream_t * comma
 
     return result;
 }
+static bool send_bitstream_wait_ack_wait_ack(em4x70_command_bitstream_t * command_bitstream) {
+
+    const em4x70_bitstream_t * send = &command_bitstream->to_send;
+    em4x70_bitstream_t * recv = &command_bitstream->to_receive;
+
+    // Validate the parameters before proceeding
+    bool parameters_valid = true;
+    do {
+        if (command_bitstream->command == 0) {
+            Dbprintf("No command specified -- coding error?");
+            parameters_valid = false;
+        } else if (command_bitstream->command != EM4X70_COMMAND_WRITE) {
+            Dbprintf("Unexpected command (only supports WRITE): 0x%x (%d)", command_bitstream->command, command_bitstream->command);
+            parameters_valid = false;
+        }
+
+        if (send->bitcount == 0) {
+            Dbprintf("No bits to send -- coding error?");
+            parameters_valid = false;
+        } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
+            Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
+            parameters_valid = false;
+        }
+        if (recv->bitcount != 0) {
+            Dbprintf("Expecting to receive data (%d bits) -- coding error?", recv->bitcount);
+            parameters_valid = false;
+        }
+    } while (0);
+    // early return when parameter validation fails
+    if (!parameters_valid) {
+        return false;
+    }
+
+    bool result = false;
+    log_reset();
+
+    // TIMING SENSITIVE SECTION -- only debug output on unrecoverable errors
+    if (send_bitstream_internal(send)) {
+        // Wait TWA
+        WaitTicks(EM4X70_T_TAG_TWA);
+        // look for ACK sequence
+        if (check_ack()) {
+            // now EM4x70 needs EM4X70_T_TAG_TWEE (EEPROM write time)
+            // for saving data and should return with ACK
+            WaitTicks(EM4X70_T_TAG_WEE);
+            if (check_ack()) {
+                result = true;
+            } else {
+                Dbprintf("No second ACK received after sending command");
+            }
+        } else {
+            Dbprintf("No ACK received after sending command");
+        }
+    } else {
+        Dbprintf("Failed to send command");
+    }
+    // END TIMING SENSITIVE SECTION
+
+    log_dump();
+    bitstream_dump(command_bitstream);
+    return result;
+}
 #endif // #pragma region    // Functions to send bitstreams, with options to receive data
 #if  1 // #pragma region    // Create bitstreams for each type of EM4x70 command
 
@@ -1179,8 +1241,10 @@ static int write(const uint16_t word, const uint8_t address) {
     int result = PM3_ESOFT;
     em4x70_command_bitstream_t write_cmd;
 
+    // switch-a-roo of the address, to test writing old vs. new method
+    uint8_t new_address = (address == 0xFu) ? 0xEu : 0xFu;
     const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
-    generator->write(&write_cmd, command_parity, word, address);
+    generator->write(&write_cmd, command_parity, word, new_address);
 
     log_reset();
 
@@ -1210,9 +1274,13 @@ static int write(const uint16_t word, const uint8_t address) {
             }
         }
     }
-
     log_dump();
-    bitstream_dump(&write_cmd);
+
+    bool result2 = send_bitstream_wait_ack_wait_ack(&write_cmd);
+    if (result == PM3_SUCCESS && !result2) {
+        Dbprintf("Old write command succeeded, but new one failed");
+    }
+
     return result;
 }
 
