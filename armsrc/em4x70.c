@@ -1078,8 +1078,6 @@ const em4x70_command_generators_t legacy_em4x70_command_generators = {
 };
 #endif // #pragma endregion // Create bitstreams for each type of EM4x70 command
 
-#define REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
-
 // TODO: define and use structs for rnd, frnd, response
 //       Or, just use the structs defined by IDLIB48?
 // log entry/exit point
@@ -1447,13 +1445,6 @@ void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
         success && success_with_UM2 ? 32 :
         success ? 20 :
         0;
-
-    if (command_parity && success && (data_size == 0)) {
-        REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
-        em4x70_command_bitstream_t command_bitstream = {0};
-        success = send_bitstream_and_read(&command_bitstream);
-        bitstream_dump(&command_bitstream);
-    }
 
     // not returning the data to the client about actual length read?
     reply_ng(CMD_LF_EM4X70_INFO, status, tag.data, data_size);
