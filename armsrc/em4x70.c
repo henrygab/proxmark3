@@ -1056,6 +1056,16 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
         }
     }
 
+    bool result2 = send_bitstream_and_read(&auth_cmd);
+    if ((result == PM3_SUCCESS) && !result2) {
+        Dbprintf("Old auth method succeeded, but new method failed");
+        //// Even though requested and received 20 bits, convert is as 24 bit value (legacy code behavior)
+        //encoded_bit_array_to_bytes(auth_cmd.to_receive.one_bit_per_byte, 24, response);
+    } else if ((result != PM3_SUCCESS) && result2) {
+        Dbprintf("**** Old auth method failed, but new method succeeded ****");
+        encoded_bit_array_to_bytes(auth_cmd.to_receive.one_bit_per_byte, 24, response);
+    }
+
     log_dump();
     bitstream_dump(&auth_cmd);
     return result;
