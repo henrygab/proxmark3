@@ -478,7 +478,31 @@ typedef struct _em4x70_command_bitstream {
     uint8_t received_data_converted_to_bytes[(EM4X70_MAX_BITSTREAM_BITS / 8) + (EM4X70_MAX_BITSTREAM_BITS % 8 ? 1 : 0)];
 } em4x70_command_bitstream_t;
 
-typedef bool (*bitstream_command_handler_t)(const em4x70_command_bitstream_t * send);
+typedef void (*bitstream_command_generator_id_t)(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity);
+typedef void (*bitstream_command_generator_um1_t)(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity);
+typedef void (*bitstream_command_generator_um2_t)(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity);
+typedef void (*bitstream_command_generator_auth_t)(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t * rnd, const uint8_t * frnd);
+typedef void (*bitstream_command_generator_pin_t)(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t * tag_id, const uint32_t pin_little_endian);
+typedef void (*bitstream_command_generator_write_t)(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, uint16_t data_little_endian, uint8_t address);
+
+typedef struct _em4x70_command_generators_t {
+    bitstream_command_generator_id_t    id;
+    bitstream_command_generator_um1_t   um1;
+    bitstream_command_generator_um2_t   um2;
+    bitstream_command_generator_auth_t  auth;
+    bitstream_command_generator_pin_t   pin;
+    bitstream_command_generator_write_t write;
+} em4x70_command_generators_t;
+
+
+
+static void create_legacy_em4x70_bitstream_for_cmd_id(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity);
+static void create_legacy_em4x70_bitstream_for_cmd_um1(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity);
+static void create_legacy_em4x70_bitstream_for_cmd_um2(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity);
+static void create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd);
+static void create_legacy_em4x70_bitstream_for_cmd_pin(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *tag_id, const uint32_t pin);
+static void create_legacy_em4x70_bitstream_for_cmd_write(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, uint16_t new_data, uint8_t address);
+
 
 #endif // #pragma endregion // Bitstream structures / enumerations
 #if  1 // #pragma region    // Functions to dump bitstreams to debug output
@@ -670,7 +694,10 @@ static void add_nibble_parity_to_bitstream(em4x70_bitstream_t * out_bitstream, u
     static const uint16_t parity = 0x6996u;
     out_bitstream->one_bit_per_byte[index] = (parity & (1u << nibble)) == 0 ? 0 : 1;
 }
-static void create_bitstream_for_cmd_id(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
+
+
+
+static void create_legacy_em4x70_bitstream_for_cmd_id(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_ID;
     if (with_command_parity) { // 0b001'1
@@ -687,7 +714,7 @@ static void create_bitstream_for_cmd_id(em4x70_command_bitstream_t * out_cmd_bit
     out_cmd_bitstream->to_send.bitcount = 4;
     out_cmd_bitstream->to_receive.bitcount = 32;
 }
-static void create_bitstream_for_cmd_um1(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
+static void create_legacy_em4x70_bitstream_for_cmd_um1(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_UM1;
     if (with_command_parity) { // 0b010'1
@@ -704,7 +731,7 @@ static void create_bitstream_for_cmd_um1(em4x70_command_bitstream_t * out_cmd_bi
     out_cmd_bitstream->to_send.bitcount = 4;
     out_cmd_bitstream->to_receive.bitcount = 32;
 }
-static void create_bitstream_for_cmd_um2(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
+static void create_legacy_em4x70_bitstream_for_cmd_um2(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity) {
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_UM2;
     if (with_command_parity) { // 0b111'1
@@ -721,7 +748,7 @@ static void create_bitstream_for_cmd_um2(em4x70_command_bitstream_t * out_cmd_bi
     out_cmd_bitstream->to_send.bitcount = 4;
     out_cmd_bitstream->to_receive.bitcount = 64;
 }
-static void create_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
+static void create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_AUTH;
 
@@ -769,7 +796,7 @@ static void create_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_b
     out_cmd_bitstream->to_send.bitcount = 95;
     out_cmd_bitstream->to_receive.bitcount = 20;
 }
-static void create_bitstream_for_cmd_pin(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *tag_id, const uint32_t pin) {
+static void create_legacy_em4x70_bitstream_for_cmd_pin(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *tag_id, const uint32_t pin) {
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_PIN;
 
@@ -803,7 +830,7 @@ static void create_bitstream_for_cmd_pin(em4x70_command_bitstream_t * out_cmd_bi
     out_cmd_bitstream->to_send.bitcount = 68;
     out_cmd_bitstream->to_receive.bitcount = 32;
 }
-static void create_bitstream_for_cmd_write(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, uint16_t new_data, uint8_t address) {
+static void create_legacy_em4x70_bitstream_for_cmd_write(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, uint16_t new_data, uint8_t address) {
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_WRITE;
 
@@ -853,6 +880,14 @@ static void create_bitstream_for_cmd_write(em4x70_command_bitstream_t * out_cmd_
     out_cmd_bitstream->to_send.bitcount = 34;
     out_cmd_bitstream->to_receive.bitcount = 0;
 }
+const em4x70_command_generators_t legacy_em4x70_command_generators = {
+    .id    = create_legacy_em4x70_bitstream_for_cmd_id,
+    .um1   = create_legacy_em4x70_bitstream_for_cmd_um1,
+    .um2   = create_legacy_em4x70_bitstream_for_cmd_um2,
+    .auth  = create_legacy_em4x70_bitstream_for_cmd_auth,
+    .pin   = create_legacy_em4x70_bitstream_for_cmd_pin,
+    .write = create_legacy_em4x70_bitstream_for_cmd_write
+};
 #endif // #pragma endregion // Create bitstreams for each type of EM4x70 command
 
 #define REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
@@ -939,9 +974,10 @@ static bool check_ack(void) {
 // log entry/exit point
 static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *response) {
     int result = PM3_ESOFT;
-
     em4x70_command_bitstream_t auth_cmd;
-    create_bitstream_for_cmd_auth(&auth_cmd, command_parity, rnd, frnd);
+
+    const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
+    generator->auth(&auth_cmd, command_parity, rnd, frnd);
 
     log_reset();
 
@@ -1074,7 +1110,8 @@ static int send_pin(const uint32_t pin) {
     int result = PM3_ESOFT;
 
     em4x70_command_bitstream_t send_pin_cmd;
-    create_bitstream_for_cmd_pin(&send_pin_cmd, command_parity, &tag.data[4], pin);
+    const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
+    generator->pin(&send_pin_cmd, command_parity, &tag.data[4], pin);
 
     log_reset();
 
@@ -1124,7 +1161,10 @@ static int send_pin(const uint32_t pin) {
 static int write(const uint16_t word, const uint8_t address) {
     int result = PM3_ESOFT;
     em4x70_command_bitstream_t write_cmd;
-    create_bitstream_for_cmd_write(&write_cmd, command_parity, word, address);
+
+    const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
+    generator->write(&write_cmd, command_parity, word, address);
+
     log_reset();
 
     // writes <word> to specified <address>
@@ -1266,7 +1306,9 @@ static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expect
  */
 static bool em4x70_read_id(void) {
     em4x70_command_bitstream_t read_id_cmd;
-    create_bitstream_for_cmd_id(&read_id_cmd, command_parity);
+    const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
+    generator->id(&read_id_cmd, command_parity);
+
     bool result = send_command_and_read(EM4X70_COMMAND_ID, &tag.data[4], 4);
     bitstream_dump(&read_id_cmd);
     return result;
@@ -1279,7 +1321,9 @@ static bool em4x70_read_id(void) {
  */
 static bool em4x70_read_um1(void) {
     em4x70_command_bitstream_t read_um1_cmd;
-    create_bitstream_for_cmd_um1(&read_um1_cmd, command_parity);
+    const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
+    generator->um1(&read_um1_cmd, command_parity);
+
     bool result = send_command_and_read(EM4X70_COMMAND_UM1, &tag.data[0], 4);
     bitstream_dump(&read_um1_cmd);
     return result;
@@ -1292,7 +1336,9 @@ static bool em4x70_read_um1(void) {
  */
 static bool em4x70_read_um2(void) {
     em4x70_command_bitstream_t read_um2_cmd;
-    create_bitstream_for_cmd_um2(&read_um2_cmd, command_parity);
+    const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
+    generator->um2(&read_um2_cmd, command_parity);
+
     bool result = send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
     bitstream_dump(&read_um2_cmd);
     return result;
@@ -1426,12 +1472,6 @@ void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
     if (command_parity && success && (data_size == 0)) {
         REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
         em4x70_command_bitstream_t command_bitstream = {0};
-        create_bitstream_for_cmd_auth(&command_bitstream, true, etd->rnd, etd->frnd);
-        create_bitstream_for_cmd_um1(&command_bitstream, true);
-        create_bitstream_for_cmd_um2(&command_bitstream, true);
-        create_bitstream_for_cmd_pin(&command_bitstream, true, etd->rnd, etd->pin);
-        create_bitstream_for_cmd_write(&command_bitstream, true, etd->word, etd->address);
-        create_bitstream_for_cmd_id(&command_bitstream, false);
         success = send_bitstream_and_read(&command_bitstream);
         bitstream_dump(&command_bitstream);
     }
