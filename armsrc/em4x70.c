@@ -764,7 +764,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_um2(em4x70_command_bitstream_
     return true;
 }
 static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
-    const uint8_t expected_bits_to_send = 95u; // normally 94 bits, but legacy hack inserts an extra RM bit, and always adds a command parity bit
+    const uint8_t expected_bits_to_send = 95u;
     bool result = true;
     
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
@@ -772,13 +772,13 @@ static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream
 
     em4x70_bitstream_t * s = &out_cmd_bitstream->to_send;
 
-    // *********************************************************************************
-    // HACK -- Insert an extra zero bit to match legacy behavior
-    // *********************************************************************************
-    result = result && add_bit_to_bitstream(s, 0);
+    // // *********************************************************************************
+    // // HACK -- Insert an extra zero bit to match legacy behavior
+    // // *********************************************************************************
+    // result = result && add_bit_to_bitstream(s, 0);
 
-    // uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
-    uint8_t cmd = 0x6u; // HACK - always sent with cmd parity, with extra zero bit in RM?
+    uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
+    // uint8_t cmd = 0x6u; // HACK - always sent with cmd parity, with extra zero bit in RM?
     result = result && add_nibble_to_bitstream(s, cmd, false);
 
     // Reader:     [RM][0][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
@@ -1302,36 +1302,6 @@ static uint8_t encoded_bit_array_to_byte(const uint8_t *bits, int count_of_bits)
     return byte;
 }
 
-// log entry/exit point
-REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
-static bool send_command_and_read(uint8_t command, uint8_t *bytes, size_t expected_byte_count) {
-
-    int retries = EM4X70_COMMAND_RETRIES;
-    bool result = false;
-
-    while (retries) { // retry is only for finding the listen window .. not actual command!
-        log_reset();
-        retries--;
-        if (find_listen_window(true)) {
-            uint8_t bits[EM4X70_MAX_RECEIVE_BITCOUNT] = {0};
-            size_t out_length_bits = expected_byte_count * 8;
-            em4x70_send_nibble(command, command_parity);
-            int len = em4x70_receive(bits, out_length_bits);
-            if (len < out_length_bits) {
-                Dbprintf("Invalid data received length: %d, expected %d", len, out_length_bits);
-            } else {
-                encoded_bit_array_to_bytes(bits, len, bytes);
-                result = true;
-            }
-            break;
-        }
-    }
-    log_dump();
-    return result;
-}
-
-
-
 /**
  * em4x70_read_id
  *
@@ -1378,12 +1348,9 @@ static bool em4x70_read_um2(void) {
     const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
     generator->um2(&read_um2_cmd, command_parity);
 
-    bool result = send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
-
-    bool result2 = send_bitstream_and_read(&read_um2_cmd);
-    if (result && !result2) {
-        Dbprintf("Old read of UM2 worked, but new method failed");
-        //encoded_bit_array_to_bytes(read_um2_cmd.to_receive.one_bit_per_byte, read_um2_cmd.to_receive.bitcount, &tag.data[24]);
+    bool result = send_bitstream_and_read(&read_um2_cmd);
+    if (result) {
+        encoded_bit_array_to_bytes(read_um2_cmd.to_receive.one_bit_per_byte, read_um2_cmd.to_receive.bitcount, &tag.data[24]);
     }
 
 
