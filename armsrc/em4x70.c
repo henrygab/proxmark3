@@ -446,6 +446,23 @@ static void em4x70_send_bit(bool bit) {
     log_sent_bit_end(GetTicks());
 }
 
+// TODO: Add similar function that will wait for an ACK/NAK up to a given timeout.
+//       This will allow for more flexibile handling of tag timing in the response.
+static bool check_ack(void) {
+    // returns true if signal structue corresponds to ACK, anything else is
+    // counted as NAK (-> false)
+    // ACK  64 + 64
+    // NAK 64 + 48
+    if (check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD) &&
+        check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD)) {
+        // ACK
+        return true;
+    }
+
+    // Otherwise it was a NAK or Listen Window
+    return false;
+}
+
 #if  1 // #pragma region    // Bitstream structures / enumerations
 #define EM4X70_MAX_BITSTREAM_BITS MAX(EM4X70_MAX_SEND_BITCOUNT, EM4X70_MAX_RECEIVE_BITCOUNT)
 
@@ -642,7 +659,7 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
     bool result = (bits_received == recv->bitcount);
 
     // output errors via debug prints and dump log as appropriate
-    encoded_bit_array_to_bytes(recv->one_bit_per_byte, bits_received, command_bitstream->received_data_converted_to_bytes);
+    encoded_bit_array_to_bytes(recv->one_bit_per_byte, bits_to_decode, command_bitstream->received_data_converted_to_bytes);
     log_dump();
     bitstream_dump(command_bitstream);
     if (bits_received == 0) {
@@ -654,6 +671,81 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
     }
 
     // finally return the result of the operation
+    return result;
+}
+static bool send_bitstream_wait_ack_wait_read(em4x70_command_bitstream_t * command_bitstream) {
+    const em4x70_bitstream_t * send = &command_bitstream->to_send;
+    em4x70_bitstream_t * recv = &command_bitstream->to_receive;
+
+    // Validate the parameters before proceeding
+    bool parameters_valid = true;
+    do {
+        if (command_bitstream->command == 0) {
+            Dbprintf("No command specified -- coding error?");
+            parameters_valid = false;
+        } else if (command_bitstream->command != EM4X70_COMMAND_PIN) {
+            Dbprintf("Unexpected command (only supports PIN): 0x%x (%d)", command_bitstream->command, command_bitstream->command);
+            parameters_valid = false;
+        }
+
+        if (send->bitcount == 0) {
+            Dbprintf("No bits to send -- coding error?");
+            parameters_valid = false;
+        } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
+            Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
+            parameters_valid = false;
+        }
+        if (recv->bitcount == 0) {
+            Dbprintf("No bits to receive -- coding error?");
+            parameters_valid = false;
+        } else if (recv->bitcount > EM4X70_MAX_RECEIVE_BITCOUNT) {
+            Dbprintf("Too many bits to receive -- coding error? %d", recv->bitcount);
+            parameters_valid = false;
+        } else if (recv->bitcount % 8u != 0u) {
+            Dbprintf("PIN must transmit multiple of 8 bits -- coding error?", recv->bitcount);
+            parameters_valid = false;
+        }
+    } while (0);
+    // early return when parameter validation fails
+    if (!parameters_valid) {
+        return false;
+    }
+
+    log_reset();
+
+    int bits_received = 0;
+    // TIMING SENSITIVE SECTION -- only debug output on unrecoverable errors
+    if (send_bitstream_internal(send)) {
+
+        // Wait TWALB (write access lock bits)
+        WaitTicks(EM4X70_T_TAG_TWALB);
+
+        // <-- Receive ACK
+        if (check_ack()) {
+
+            // <w> Writes Lock Bits
+            WaitTicks(EM4X70_T_TAG_WEE);
+
+            bits_received  = em4x70_receive(recv->one_bit_per_byte, recv->bitcount);
+            if (bits_received != recv->bitcount) {
+                Dbprintf("Invalid data received length: %d, expected %d", bits_received, recv->bitcount);
+            }
+        } else {
+            Dbprintf("No ACK received after sending command");
+        }
+    } else {
+        Dbprintf("Failed to send command");
+    }
+    // END TIMING SENSITIVE SECTION
+
+    // Convert the received bits into byte array (bits are received in reverse order ... this simplifies reasoning / debugging)
+    bool result = (bits_received == recv->bitcount);
+
+    // output errors via debug prints and dump log as appropriate
+    encoded_bit_array_to_bytes(recv->one_bit_per_byte, bits_received, command_bitstream->received_data_converted_to_bytes);
+    log_dump();
+    bitstream_dump(command_bitstream);
+
     return result;
 }
 #endif // #pragma region    // Functions to send bitstreams, with options to receive data
@@ -985,22 +1077,6 @@ static void em4x70_send_word(const uint16_t word) {
     em4x70_send_bit(0);
 }
 
-// TODO: Add similar function that will wait for an ACK/NAK up to a given timeout.
-//       This will allow for more flexibile handling of tag timing in the response.
-static bool check_ack(void) {
-    // returns true if signal structue corresponds to ACK, anything else is
-    // counted as NAK (-> false)
-    // ACK  64 + 64
-    // NAK 64 + 48
-    if (check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD) &&
-        check_pulse_length(get_pulse_length(FALLING_EDGE), 2 * EM4X70_T_TAG_FULL_PERIOD)) {
-        // ACK
-        return true;
-    }
-
-    // Otherwise it was a NAK or Listen Window
-    return false;
-}
 
 // TODO: define and use structs for rnd, frnd, response
 //       Or, just use the structs defined by IDLIB48?
@@ -1141,9 +1217,13 @@ static int send_pin(const uint32_t pin) {
             }
         }
     }
-
     log_dump();
-    bitstream_dump(&send_pin_cmd);
+
+    // try using the new version of the function
+    bool result2 = send_bitstream_wait_ack_wait_read(&send_pin_cmd);
+    if (result == PM3_SUCCESS && !result2) {
+        Dbprintf("Old method worked, but new method failed?");
+    }
     return result;
 }
 
