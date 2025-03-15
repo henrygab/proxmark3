@@ -778,6 +778,7 @@ static bool send_bitstream_wait_ack_wait_ack(em4x70_command_bitstream_t * comman
     } while (0);
     // early return when parameter validation fails
     if (!parameters_valid) {
+        Dbprintf("Parameter validation failed");
         return false;
     }
 
@@ -1079,60 +1080,6 @@ const em4x70_command_generators_t legacy_em4x70_command_generators = {
 
 #define REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
 
-/**
- * em4x70_send_nibble
- *
- *  sends 4 bits of data + 1 bit of parity (with_parity)
- *
- */
-REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
-static void em4x70_send_nibble(uint8_t nibble, bool add_extra_parity_bit) {
-    int parity = 0;
-    int msb_bit = 0;
-
-    // Non automotive EM4x70 based tags are 3 bits + 1 parity.
-    // So drop the MSB and send a parity bit instead after the command
-    if (command_parity) {
-        msb_bit = 1;
-    }
-
-    for (int i = msb_bit; i < 4; i++) {
-        int bit = (nibble >> (3 - i)) & 1;
-        em4x70_send_bit(bit);
-        parity ^= bit;
-    }
-
-    if (add_extra_parity_bit) {
-        em4x70_send_bit(parity);
-    }
-}
-
-REMOVE_AFTER_MIGRATION_TO_BITSTREAMS
-static void em4x70_send_word(const uint16_t word) {
-
-    // Split into nibbles
-    uint8_t nibbles[4];
-    uint8_t j = 0;
-    for (int i = 0; i < 2; i++) {
-        uint8_t byte = (word >> (8 * i)) & 0xff;
-        nibbles[j++] = (byte >> 4) & 0xf;
-        nibbles[j++] = byte & 0xf;
-    }
-
-    // send 16 bit word with parity bits according to EM4x70 datasheet
-    // sent as 4 x nibbles (4 bits + parity)
-    for (int i = 0; i < 4; i++) {
-        em4x70_send_nibble(nibbles[i], true);
-    }
-
-    // send column parities (4 bit)
-    em4x70_send_nibble(nibbles[0] ^ nibbles[1] ^ nibbles[2] ^ nibbles[3], false);
-
-    // send final stop bit (always "0")
-    em4x70_send_bit(0);
-}
-
-
 // TODO: define and use structs for rnd, frnd, response
 //       Or, just use the structs defined by IDLIB48?
 // log entry/exit point
@@ -1238,50 +1185,16 @@ static int send_pin(const uint32_t pin) {
 
 // log entry/exit point
 static int write(const uint16_t word, const uint8_t address) {
-    int result = PM3_ESOFT;
     em4x70_command_bitstream_t write_cmd;
 
-    // switch-a-roo of the address, to test writing old vs. new method
-    uint8_t new_address = (address == 0xFu) ? 0xEu : 0xFu;
     const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
-    generator->write(&write_cmd, command_parity, word, new_address);
+    generator->write(&write_cmd, command_parity, word, address);
 
-    log_reset();
-
-    // writes <word> to specified <address>
-    if (find_listen_window(true)) {
-
-        // send write command
-        em4x70_send_nibble(EM4X70_COMMAND_WRITE, true);
-
-        // send address data with parity bit
-        em4x70_send_nibble(address, true);
-
-        // send data word
-        em4x70_send_word(word);
-
-        // Wait TWA
-        WaitTicks(EM4X70_T_TAG_TWA);
-
-        // look for ACK sequence
-        if (check_ack()) {
-
-            // now EM4x70 needs EM4X70_T_TAG_TWEE (EEPROM write time)
-            // for saving data and should return with ACK
-            WaitTicks(EM4X70_T_TAG_WEE);
-            if (check_ack()) {
-                result = PM3_SUCCESS;
-            }
-        }
+    bool result = send_bitstream_wait_ack_wait_ack(&write_cmd);
+    if (!result) {
+        Dbprintf("Failed to write data");
     }
-    log_dump();
-
-    bool result2 = send_bitstream_wait_ack_wait_ack(&write_cmd);
-    if (result == PM3_SUCCESS && !result2) {
-        Dbprintf("Old write command succeeded, but new one failed");
-    }
-
-    return result;
+    return result ? PM3_SUCCESS : PM3_ESOFT;
 }
 
 
