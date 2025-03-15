@@ -777,8 +777,8 @@ static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream
     // // *********************************************************************************
     // result = result && add_bit_to_bitstream(s, 0);
 
-    uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
-    // uint8_t cmd = 0x6u; // HACK - always sent with cmd parity, with extra zero bit in RM?
+    // uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
+    uint8_t cmd = 0x6u; // HACK - always sent with cmd parity
     result = result && add_nibble_to_bitstream(s, cmd, false);
 
     // Reader:     [RM][0][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
@@ -1016,7 +1016,7 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
 
     if (find_listen_window(true)) {
 
-        em4x70_send_nibble(EM4X70_COMMAND_AUTH, false);
+        em4x70_send_nibble(EM4X70_COMMAND_AUTH, true);
 
         // Send 56-bit Random number
         for (int i = 0; i < 7; i++) {
