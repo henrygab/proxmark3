@@ -1359,12 +1359,9 @@ static bool em4x70_read_um1(void) {
     const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
     generator->um1(&read_um1_cmd, command_parity);
 
-    bool result = send_command_and_read(EM4X70_COMMAND_UM1, &tag.data[0], 4);
-
-    bool result2 = send_bitstream_and_read(&read_um1_cmd);
-    if (!result2 && result) {
-        Dbprintf("Old read UM1 worked, but not the new\n");
-        //encoded_bit_array_to_bytes(read_um1_cmd.to_receive.one_bit_per_byte, read_um1_cmd.to_receive.bitcount, &tag.data[0]);
+    bool result = send_bitstream_and_read(&read_um1_cmd);
+    if (result) {
+        encoded_bit_array_to_bytes(read_um1_cmd.to_receive.one_bit_per_byte, read_um1_cmd.to_receive.bitcount, &tag.data[0]);
     }
 
     bitstream_dump(&read_um1_cmd);
@@ -1382,6 +1379,14 @@ static bool em4x70_read_um2(void) {
     generator->um2(&read_um2_cmd, command_parity);
 
     bool result = send_command_and_read(EM4X70_COMMAND_UM2, &tag.data[24], 8);
+
+    bool result2 = send_bitstream_and_read(&read_um2_cmd);
+    if (result && !result2) {
+        Dbprintf("Old read of UM2 worked, but new method failed");
+        //encoded_bit_array_to_bytes(read_um2_cmd.to_receive.one_bit_per_byte, read_um2_cmd.to_receive.bitcount, &tag.data[24]);
+    }
+
+
     bitstream_dump(&read_um2_cmd);
     return result;
 }
