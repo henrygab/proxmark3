@@ -764,7 +764,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_um2(em4x70_command_bitstream_
     return true;
 }
 static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_t * out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
-    const uint8_t expected_bits_to_send = 95u;
+    const uint8_t expected_bits_to_send = 96u;
     bool result = true;
     
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
@@ -772,10 +772,10 @@ static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream
 
     em4x70_bitstream_t * s = &out_cmd_bitstream->to_send;
 
-    // // *********************************************************************************
-    // // HACK -- Insert an extra zero bit to match legacy behavior
-    // // *********************************************************************************
-    // result = result && add_bit_to_bitstream(s, 0);
+    // *********************************************************************************
+    // HACK -- Insert an extra zero bit to match legacy behavior
+    // *********************************************************************************
+    result = result && add_bit_to_bitstream(s, 0);
 
     // uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
     uint8_t cmd = 0x6u; // HACK - always sent with cmd parity
@@ -1055,6 +1055,7 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
             result = PM3_SUCCESS;
         }
     }
+    log_dump();
 
     bool result2 = send_bitstream_and_read(&auth_cmd);
     if ((result == PM3_SUCCESS) && !result2) {
@@ -1065,9 +1066,6 @@ static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *respon
         Dbprintf("**** Old auth method failed, but new method succeeded ****");
         encoded_bit_array_to_bytes(auth_cmd.to_receive.one_bit_per_byte, 24, response);
     }
-
-    log_dump();
-    bitstream_dump(&auth_cmd);
     return result;
 }
 
