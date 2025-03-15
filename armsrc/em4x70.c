@@ -1181,9 +1181,11 @@ static bool find_listen_window(bool command) {
                  *   em4170 says we need to wait about 48 RF clock cycles.
                  *   depends on the delay between tag and us
                  *
-                 *   I've found between 4-5 quarter periods (32-40) works best
+                 *   I've found 32-40 field cycles works best
+                 *   Allow user adjustment in range: 24-48 field cycles?
+                 *   On PM3Easy I've seen success at 24..40 field 
                  */
-                WaitTicks(4 * EM4X70_T_TAG_QUARTER_PERIOD);
+                WaitTicks(40 * TICKS_PER_FC);
                 // Send RM Command
                 em4x70_send_bit(0);
                 em4x70_send_bit(0);
@@ -1409,18 +1411,16 @@ void em4x70_info(const em4x70_data_t *etd, bool ledcontrol) {
     if (get_signalproperties() && find_em4x70_tag()) {
         // Read ID and UM1 (both em4070 and em4170)
         success = em4x70_read_id() && em4x70_read_um1();
-        if (success) {
-            // em4170 also has UM2, V4070 does not (e.g., 1998 Porsche Boxster)
-            success_with_UM2 = em4x70_read_um2();
-        }
+        // em4170 also has UM2, V4070 does not (e.g., 1998 Porsche Boxster)
+        success_with_UM2 = em4x70_read_um2();
     }
 
     StopTicks();
     lf_finalize(ledcontrol);
     int status = success ? PM3_SUCCESS : PM3_ESOFT;
     size_t data_size =
-        success_with_UM2 ? 20 :
-        success ? 32 :
+        success && success_with_UM2 ? 32 :
+        success ? 20 :
         0;
 
     if (command_parity && success && (data_size == 0)) {
