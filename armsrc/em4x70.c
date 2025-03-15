@@ -1006,67 +1006,16 @@ static bool check_ack(void) {
 //       Or, just use the structs defined by IDLIB48?
 // log entry/exit point
 static int authenticate(const uint8_t *rnd, const uint8_t *frnd, uint8_t *response) {
-    int result = PM3_ESOFT;
     em4x70_command_bitstream_t auth_cmd;
 
     const em4x70_command_generators_t * generator = &legacy_em4x70_command_generators;
     generator->auth(&auth_cmd, command_parity, rnd, frnd);
 
-    log_reset();
-
-    if (find_listen_window(true)) {
-
-        em4x70_send_nibble(EM4X70_COMMAND_AUTH, true);
-
-        // Send 56-bit Random number
-        for (int i = 0; i < 7; i++) {
-            em4x70_send_byte(rnd[i]);
-        }
-
-        // Send 7 x 0's (Diversity bits)
-        for (int i = 0; i < 7; i++) {
-            em4x70_send_bit(0);
-        }
-
-        // Send 28-bit f(RN)
-
-        // Send first 24 bits
-        for (int i = 0; i < 3; i++) {
-            em4x70_send_byte(frnd[i]);
-        }
-
-        // Send last 4 bits (no parity)
-        em4x70_send_nibble((frnd[3] >> 4) & 0xf, false);
-
-        // Receive header, 20-bit g(RN), LIW
-        uint8_t grnd[EM4X70_MAX_RECEIVE_BITCOUNT] = {0};
-        int num = em4x70_receive(grnd, 20);
-        if (num < 20) {
-            if (g_dbglevel >= DBG_EXTENDED) {
-                Dbprintf("Auth failed");
-            }
-            result = PM3_ESOFT;
-        } else {
-            // although only received 20 bits
-            // ask for 24 bits converted because
-            // the utility function requires
-            // decoding in multiples of 8 bits
-            encoded_bit_array_to_bytes(grnd, 24, response);
-            result = PM3_SUCCESS;
-        }
-    }
-    log_dump();
-
-    bool result2 = send_bitstream_and_read(&auth_cmd);
-    if ((result == PM3_SUCCESS) && !result2) {
-        Dbprintf("Old auth method succeeded, but new method failed");
-        //// Even though requested and received 20 bits, convert is as 24 bit value (legacy code behavior)
-        //encoded_bit_array_to_bytes(auth_cmd.to_receive.one_bit_per_byte, 24, response);
-    } else if ((result != PM3_SUCCESS) && result2) {
-        Dbprintf("**** Old auth method failed, but new method succeeded ****");
+    bool result = send_bitstream_and_read(&auth_cmd);
+    if (result) {
         encoded_bit_array_to_bytes(auth_cmd.to_receive.one_bit_per_byte, 24, response);
     }
-    return result;
+    return result ? PM3_SUCCESS : PM3_ESOFT;
 }
 
 // Sets one (reflected) byte and returns carry bit
