@@ -25,6 +25,25 @@
 #include "em4x70.h"
 #include "appmain.h" // tear
 
+// Set debug level via client, e.g.: `hw dbg -4`
+// For development, can force all the logging at compilation time by setting this to `true`
+#define FORCE_ENABLE_LOGGING (false)
+
+// Define debug macros that efficiently avoid formatting the strings
+// if the debug level is not high enough.  Avoids rewriting the same
+// checks like `if (g_dbglevel >= DBG_ERROR)` throughout the code,
+// improving readability.  On the downside, it does require double-parentheses
+// because of the limitations of the C preprocessor (until C23).
+//
+// Example usage:
+//     DPRINTF_ERROR(("Error: %d", error_code));
+//     DPRINTF_EXTENDED(("Bitstream: %s", bitstream_as_string));
+#define DPRINTF_ALWAYS(x)   do { Dbprintf x ; } while (0);
+#define DPRINTF_ERROR(x)    do { if ((FORCE_ENABLE_LOGGING) || (g_dbglevel >= DBG_ERROR   )) { Dbprintf x ; } } while (0);
+#define DPRINTF_INFO(x)     do { if ((FORCE_ENABLE_LOGGING) || (g_dbglevel >= DBG_INFO    )) { Dbprintf x ; } } while (0);
+#define DPRINTF_DEBUG(x)    do { if ((FORCE_ENABLE_LOGGING) || (g_dbglevel >= DBG_DEBUG   )) { Dbprintf x ; } } while (0);
+#define DPRINTF_EXTENDED(x) do { if ((FORCE_ENABLE_LOGGING) || (g_dbglevel >= DBG_EXTENDED)) { Dbprintf x ; } } while (0);
+#define DPRINTF_PROLIX(x)   do { if ((FORCE_ENABLE_LOGGING) || (g_dbglevel >  DBG_EXTENDED)) { Dbprintf x ; } } while (0);
 static em4x70_tag_t tag = { 0 };
 
 // EM4170 requires a parity bit on commands, other variants do not.
@@ -347,40 +366,42 @@ static void log_reset(void) {
     }
 }
 static void log_dump_helper(em4x70_sublog_t * part, bool is_transmit) {
-    char const * const  direction = is_transmit ? "sent >>>" : "recv <<<";
-    if (part->bits_used == 0) {
-        if (g_dbglevel >= DBG_INFO || true) {
-            Dbprintf("%s: no data", direction);
+    if (g_dbglevel >= DBG_INFO || FORCE_ENABLE_LOGGING) {
+        char const * const  direction = is_transmit ? "sent >>>" : "recv <<<";
+        if (part->bits_used == 0) {
+            DPRINTF_EXTENDED(("%s: no data", direction));
+        } else {
+            char bitstring[EM4X70_MAX_LOG_BITS + 1];
+            memset(bitstring, 0, sizeof(bitstring));
+            for (int i = 0; i < part->bits_used; i++) {
+                bitstring[i] = part->bit[i] ? '1' : '0';
+            }
+            DPRINTF_EXTENDED((
+                "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s",
+                direction,
+                part->start_tick, part->end_tick,
+                part->end_tick - part->start_tick,
+                part->bits_used, bitstring
+                ));
         }
-    } else {
-        char bitstring[EM4X70_MAX_LOG_BITS + 1];
-        memset(bitstring, 0, sizeof(bitstring));
-        for (int i = 0; i < part->bits_used; i++) {
-            bitstring[i] = part->bit[i] ? '1' : '0';
-        }
-        Dbprintf(
-            "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s",
-            direction,
-            part->start_tick, part->end_tick,
-            part->end_tick - part->start_tick,
-            part->bits_used, bitstring
-            );
     }
 }
 static void log_dump(void) {
-    bool hasContent = false;
-    if (g_Log != NULL) {
-        uint8_t * check_for_data = (uint8_t *)g_Log;
-        for (size_t i = 0; i < sizeof(em4x70_transmitted_data_log_t); ++i) {
-            if (check_for_data[i] != 0) {
-                hasContent = true;
-                break;
+    if (g_dbglevel >= DBG_INFO || FORCE_ENABLE_LOGGING) {
+        bool hasContent = false;
+        if (g_Log != NULL) {
+            uint8_t * check_for_data = (uint8_t *)g_Log;
+            for (size_t i = 0; i < sizeof(em4x70_transmitted_data_log_t); ++i) {
+                if (check_for_data[i] != 0) {
+                    hasContent = true;
+                    break;
+                }
             }
         }
-    }
-    if (hasContent) {
-        log_dump_helper(&g_Log->transmit, true);
-        log_dump_helper(&g_Log->receive, false);
+        if (hasContent) {
+            log_dump_helper(&g_Log->transmit, true);
+            log_dump_helper(&g_Log->receive, false);
+        }
     }
 }
 static void log_sent_bit(uint32_t start_tick, bool bit) {
@@ -518,24 +539,24 @@ static void bitstream_dump_helper(const em4x70_bitstream_t * bitstream, bool is_
     char const * const  direction = is_transmit ? "sent >>>" : "recv <<<";
     if (bitstream->bitcount == 0) {
         if (g_dbglevel >= DBG_INFO || true) {
-            Dbprintf("%s: no data", direction);
+            DPRINTF_EXTENDED(("%s: no data", direction));
         }
     } else if (bitstream->bitcount > 0xFEu) {
-        Dbprintf("INTERNAL ERROR: Too many bits to dump: %d", bitstream->bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Too many bits to dump: %d", bitstream->bitcount));
     } else {
         char bitstring[EM4X70_MAX_BITSTREAM_BITS + 1];
         memset(bitstring, 0, sizeof(bitstring));
         for (uint16_t i = 0; i < bitstream->bitcount; ++i) {
             bitstring[i] = bitstream->one_bit_per_byte[i] ? '1' : '0';
         }
-        Dbprintf(
+        DPRINTF_EXTENDED((
             "%s: [ %8d .. %8d ] ( %6d ) %2d bits: %s%s",
             direction,
             0, 0, 0,
             bitstream->bitcount + (is_transmit ? 2u : 0u), // add the two RM bits to transmitted data
             is_transmit ? "00" : "", // add the two RM bits to transmitted data
             bitstring
-            );
+            ));
     }
 }
 static void bitstream_dump(const em4x70_command_bitstream_t * cmd_bitstream) {
@@ -585,7 +606,7 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
     uint8_t bits_to_decode;
     do {
         if (command_bitstream->command == 0) {
-            Dbprintf("No command specified -- coding error?");
+            DPRINTF_ERROR(("No command specified -- coding error?"));
             parameters_valid = false;
             bits_to_decode = 0;
         } else if (
@@ -597,26 +618,26 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
             // These are the four commands that are supported by this function.
             // Allow these to proceed.
         } else {
-            Dbprintf("Unknown command: 0x%x (%d)", command_bitstream->command, command_bitstream->command);
+            DPRINTF_ERROR(("Unknown command: 0x%x (%d)", command_bitstream->command, command_bitstream->command));
             parameters_valid = false;
             bits_to_decode = 0;
         }
 
         if (send->bitcount == 0) {
-            Dbprintf("No bits to send -- coding error?");
+            DPRINTF_ERROR(("No bits to send -- coding error?"));
             parameters_valid = false;
             bits_to_decode = 0;
         } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
-            Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
+            DPRINTF_ERROR(("Too many bits to send -- coding error? %d", send->bitcount));
             parameters_valid = false;
             bits_to_decode = 0;
         }
         if (recv->bitcount == 0) {
-            Dbprintf("No bits to receive -- coding error?");
+            DPRINTF_ERROR(("No bits to receive -- coding error?"));
             parameters_valid = false;
             bits_to_decode = 0;
         } else if (recv->bitcount > EM4X70_MAX_RECEIVE_BITCOUNT) {
-            Dbprintf("Too many bits to receive -- coding error? %d", recv->bitcount);
+            DPRINTF_ERROR(("Too many bits to receive -- coding error? %d", recv->bitcount));
             parameters_valid = false;
             bits_to_decode = 0;
         } else if (recv->bitcount % 8u != 0u) {
@@ -626,10 +647,10 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
             // _Static_assert(EM4X70_MAX_RECEIVE_BITCOUNT <= (UINT8_MAX - (UINT8_MAX % 8u)), "EM4X70_MAX_RECEIVE_BITCOUNT too large to safely round up within a uint8_t?");
             // No static assertion, so do this at runtime
             if (bits_to_decode > EM4X70_MAX_RECEIVE_BITCOUNT) {
-                Dbprintf("Too many bits to decode after adjusting to nearest byte multiple -- coding error? %d --> %d (max %d)", recv->bitcount, bits_to_decode, EM4X70_MAX_RECEIVE_BITCOUNT);
+                DPRINTF_ERROR(("Too many bits to decode after adjusting to nearest byte multiple -- coding error? %d --> %d (max %d)", recv->bitcount, bits_to_decode, EM4X70_MAX_RECEIVE_BITCOUNT));
                 parameters_valid = false;
             } else {
-                Dbprintf("Note: will receive %d bits, but decode as %d bits", recv->bitcount);
+                DPRINTF_PROLIX(("Note: will receive %d bits, but decode as %d bits", recv->bitcount));
             }
         } else {
             // Valid number of bits expected, and an integral multiple of 8 bits ... so decode exactly what was received
@@ -663,11 +684,11 @@ static bool send_bitstream_and_read(em4x70_command_bitstream_t * command_bitstre
     log_dump();
     bitstream_dump(command_bitstream);
     if (bits_received == 0) {
-        Dbprintf("No bits received -- tag may not be present?");
+        DPRINTF_INFO(("No bits received -- tag may not be present?"));
     } else if (bits_received < recv->bitcount) {
-        Dbprintf("Invalid data received length: %d, expected %d", bits_received, recv->bitcount);
+        DPRINTF_INFO(("Invalid data received length: %d, expected %d", bits_received, recv->bitcount));
     } else if (bits_received != recv->bitcount) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits, received %d bits (more than maximum allowed)", recv->bitcount, bits_received);
+        DPRINTF_INFO(("INTERNAL ERROR: Expected %d bits, received %d bits (more than maximum allowed)", recv->bitcount, bits_received));
     }
 
     // finally return the result of the operation
@@ -681,28 +702,28 @@ static bool send_bitstream_wait_ack_wait_read(em4x70_command_bitstream_t * comma
     bool parameters_valid = true;
     do {
         if (command_bitstream->command == 0) {
-            Dbprintf("No command specified -- coding error?");
+            DPRINTF_ERROR(("No command specified -- coding error?"));
             parameters_valid = false;
         } else if (command_bitstream->command != EM4X70_COMMAND_PIN) {
-            Dbprintf("Unexpected command (only supports PIN): 0x%x (%d)", command_bitstream->command, command_bitstream->command);
+            DPRINTF_ERROR(("Unexpected command (only supports PIN): 0x%x (%d)", command_bitstream->command, command_bitstream->command));
             parameters_valid = false;
         }
 
         if (send->bitcount == 0) {
-            Dbprintf("No bits to send -- coding error?");
+            DPRINTF_ERROR(("No bits to send -- coding error?"));
             parameters_valid = false;
         } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
-            Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
+            DPRINTF_ERROR(("Too many bits to send -- coding error? %d", send->bitcount));
             parameters_valid = false;
         }
         if (recv->bitcount == 0) {
-            Dbprintf("No bits to receive -- coding error?");
+            DPRINTF_ERROR(("No bits to receive -- coding error?"));
             parameters_valid = false;
         } else if (recv->bitcount > EM4X70_MAX_RECEIVE_BITCOUNT) {
-            Dbprintf("Too many bits to receive -- coding error? %d", recv->bitcount);
+            DPRINTF_ERROR(("Too many bits to receive -- coding error? %d", recv->bitcount));
             parameters_valid = false;
         } else if (recv->bitcount % 8u != 0u) {
-            Dbprintf("PIN must transmit multiple of 8 bits -- coding error?", recv->bitcount);
+            DPRINTF_ERROR(("PIN must transmit multiple of 8 bits -- coding error?", recv->bitcount));
             parameters_valid = false;
         }
     } while (0);
@@ -728,13 +749,13 @@ static bool send_bitstream_wait_ack_wait_read(em4x70_command_bitstream_t * comma
 
             bits_received  = em4x70_receive(recv->one_bit_per_byte, recv->bitcount);
             if (bits_received != recv->bitcount) {
-                Dbprintf("Invalid data received length: %d, expected %d", bits_received, recv->bitcount);
+                DPRINTF_INFO(("Invalid data received length: %d, expected %d", bits_received, recv->bitcount));
             }
         } else {
-            Dbprintf("No ACK received after sending command");
+            DPRINTF_INFO(("No ACK received after sending command"));
         }
     } else {
-        Dbprintf("Failed to send command");
+        DPRINTF_INFO(("Failed to send command"));
     }
     // END TIMING SENSITIVE SECTION
 
@@ -757,28 +778,28 @@ static bool send_bitstream_wait_ack_wait_ack(em4x70_command_bitstream_t * comman
     bool parameters_valid = true;
     do {
         if (command_bitstream->command == 0) {
-            Dbprintf("No command specified -- coding error?");
+            DPRINTF_ERROR(("No command specified -- coding error?"));
             parameters_valid = false;
         } else if (command_bitstream->command != EM4X70_COMMAND_WRITE) {
-            Dbprintf("Unexpected command (only supports WRITE): 0x%x (%d)", command_bitstream->command, command_bitstream->command);
+            DPRINTF_ERROR(("Unexpected command (only supports WRITE): 0x%x (%d)", command_bitstream->command, command_bitstream->command));
             parameters_valid = false;
         }
 
         if (send->bitcount == 0) {
-            Dbprintf("No bits to send -- coding error?");
+            DPRINTF_ERROR(("No bits to send -- coding error?"));
             parameters_valid = false;
         } else if (send->bitcount > EM4X70_MAX_SEND_BITCOUNT) {
-            Dbprintf("Too many bits to send -- coding error? %d", send->bitcount);
+            DPRINTF_ERROR(("Too many bits to send -- coding error? %d", send->bitcount));
             parameters_valid = false;
         }
         if (recv->bitcount != 0) {
-            Dbprintf("Expecting to receive data (%d bits) -- coding error?", recv->bitcount);
+            DPRINTF_ERROR(("Expecting to receive data (%d bits) -- coding error?", recv->bitcount));
             parameters_valid = false;
         }
     } while (0);
     // early return when parameter validation fails
     if (!parameters_valid) {
-        Dbprintf("Parameter validation failed");
+        DPRINTF_ERROR(("Parameter validation failed"));
         return false;
     }
 
@@ -797,13 +818,13 @@ static bool send_bitstream_wait_ack_wait_ack(em4x70_command_bitstream_t * comman
             if (check_ack()) {
                 result = true;
             } else {
-                Dbprintf("No second ACK received after sending command");
+                DPRINTF_INFO(("No second ACK received after sending command"));
             }
         } else {
-            Dbprintf("No ACK received after sending command");
+            DPRINTF_INFO(("No ACK received after sending command"));
         }
     } else {
-        Dbprintf("Failed to send command");
+        DPRINTF_INFO(("Failed to send command"));
     }
     // END TIMING SENSITIVE SECTION
 
@@ -819,7 +840,7 @@ static bool add_bit_to_bitstream(em4x70_bitstream_t * s, bool b) {
     uint8_t bits_to_add = 1u;
 
     if (i > EM4X70_MAX_BITSTREAM_BITS - bits_to_add) {
-        Dbprintf("Too many bits to add to bitstream: %d, %d", i, bits_to_add);
+        DPRINTF_ERROR(("Too many bits to add to bitstream: %d, %d", i, bits_to_add));
         return false;
     }
 
@@ -832,11 +853,11 @@ static bool add_nibble_to_bitstream(em4x70_bitstream_t * s, uint8_t nibble, bool
     uint8_t bits_to_add = add_fifth_parity_bit ? 5u : 4u;
     
     if (i > EM4X70_MAX_BITSTREAM_BITS - bits_to_add) {
-        Dbprintf("Too many bits to add to bitstream: %d, %d", i, bits_to_add);
+        DPRINTF_ERROR(("Too many bits to add to bitstream: %d, %d", i, bits_to_add));
         return false;
     }
     if ((nibble & 0xFu) != nibble) {
-        Dbprintf("Invalid nibble value: 0x%x", nibble);
+        DPRINTF_ERROR(("Invalid nibble value: 0x%x", nibble));
         return false;
     }
 
@@ -859,7 +880,7 @@ static bool add_byte_to_bitstream(em4x70_bitstream_t * s, uint8_t b) {
     uint8_t bits_to_add = 8u;
 
     if (i > EM4X70_MAX_BITSTREAM_BITS - bits_to_add) {
-        Dbprintf("Too many bits to add to bitstream: %d, %d", i, bits_to_add);
+        DPRINTF_ERROR(("Too many bits to add to bitstream: %d, %d", i, bits_to_add));
         return false;
     }
     // transmit the most significant bit first
@@ -885,7 +906,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_id(em4x70_command_bitstream_t
     result = result && add_nibble_to_bitstream(&out_cmd_bitstream->to_send, cmd, false);
     out_cmd_bitstream->to_receive.bitcount = 32;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits to be sent, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
         result = false;
     }
     return result;
@@ -899,7 +920,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_um1(em4x70_command_bitstream_
     result = result && add_nibble_to_bitstream(&out_cmd_bitstream->to_send, cmd, false);
     out_cmd_bitstream->to_receive.bitcount = 32;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits to be sent, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
         result = false;
     }
     return result;
@@ -913,7 +934,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_um2(em4x70_command_bitstream_
     result = result && add_nibble_to_bitstream(&out_cmd_bitstream->to_send, cmd, false);
     out_cmd_bitstream->to_receive.bitcount = 64;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits to be sent, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
         result = false;
     }
     return true;
@@ -967,7 +988,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream
 
     out_cmd_bitstream->to_receive.bitcount = 20;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits to be sent, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
         result = false;
     }
 
@@ -1007,7 +1028,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_pin(em4x70_command_bitstream_
 
     out_cmd_bitstream->to_receive.bitcount = 32;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits to be sent, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
         result = false;
     }
     return result;
@@ -1031,7 +1052,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_write(em4x70_command_bitstrea
 
     if ((address & 0x0Fu) != address) {
         // only lower 4 bits are valid for address
-        Dbprintf("Invalid address value: 0x%x", address);
+        DPRINTF_ERROR(("Invalid address value: 0x%x", address));
         result = false;
     }
     // Send address data with its even parity bit ... indexes 4 .. 8
@@ -1063,7 +1084,7 @@ static bool create_legacy_em4x70_bitstream_for_cmd_write(em4x70_command_bitstrea
 
     out_cmd_bitstream->to_receive.bitcount = 0;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
-        Dbprintf("INTERNAL ERROR: Expected %d bits to be sent, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount);
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
         result = false;
     }
     return result;
@@ -1143,27 +1164,25 @@ static int bruteforce(const uint8_t address, const uint8_t *rnd, const uint8_t *
                 break;
 
             default:
-                Dbprintf("Bad block number given: %d", address);
+                DPRINTF_ERROR(("Bad block number given: %d", address));
                 return PM3_ESOFT;
         }
 
         // Report progress every 256 attempts
         if ((k % 0x100) == 0) {
-            Dbprintf("Trying: %04X", k);
+            DPRINTF_ALWAYS(("Trying: %04X", k));
         }
 
         // Due to performance reason, we only try it once. Therefore you need a very stable RFID communcation.
         if (authenticate(temp_rnd, frnd, auth_resp) == PM3_SUCCESS) {
-            if (g_dbglevel >= DBG_INFO) {
-                Dbprintf("Authentication success with rnd: %02X%02X%02X%02X%02X%02X%02X", temp_rnd[0], temp_rnd[1], temp_rnd[2], temp_rnd[3], temp_rnd[4], temp_rnd[5], temp_rnd[6]);
-            }
+            DPRINTF_INFO(("Authentication success with rnd: %02X%02X%02X%02X%02X%02X%02X", temp_rnd[0], temp_rnd[1], temp_rnd[2], temp_rnd[3], temp_rnd[4], temp_rnd[5], temp_rnd[6]));
             response[0] = (k >> 8) & 0xFF;
             response[1] = k & 0xFF;
             return PM3_SUCCESS;
         }
 
         if (BUTTON_PRESS() || data_available()) {
-            Dbprintf("EM4x70 Bruteforce Interrupted");
+            DPRINTF_ALWAYS(("EM4x70 Bruteforce Interrupted at key %04X", k));
             return PM3_EOPABORTED;
         }
     }
@@ -1190,7 +1209,7 @@ static int write(const uint16_t word, const uint8_t address) {
 
     bool result = send_bitstream_wait_ack_wait_ack(&write_cmd);
     if (!result) {
-        Dbprintf("Failed to write data");
+        DPRINTF_INFO(("Failed to write data"));
     }
     return result ? PM3_SUCCESS : PM3_ESOFT;
 }
@@ -1242,7 +1261,7 @@ static bool find_listen_window(bool command) {
 static void encoded_bit_array_to_bytes(const uint8_t *bits, int count_of_bits, uint8_t *out) {
 
     if (count_of_bits % 8 != 0) {
-        Dbprintf("Should have a multiple of 8 bits, was sent %d", count_of_bits);
+        DPRINTF_ERROR(("Should have a multiple of 8 bits, was sent %d", count_of_bits));
     }
 
     int num_bytes = count_of_bits / 8; // We should have a multiple of 8 here
@@ -1457,7 +1476,7 @@ void em4x70_write(const em4x70_data_t *etd, bool ledcontrol) {
 
     // Disable to prevent sending corrupted data to the tag.
     if (command_parity) {
-        Dbprintf("Use of `--par` option with `lf em 4x70 write` is  non-functional and may corrupt data on the tag.");
+        DPRINTF_ALWAYS(("Use of `--par` option with `lf em 4x70 write` is  non-functional and may corrupt data on the tag."));
         // reply_ng(CMD_LF_EM4X70_WRITE, PM3_ENOTIMPL, NULL, 0);
         // return;
     }
@@ -1528,7 +1547,7 @@ void em4x70_auth(const em4x70_data_t *etd, bool ledcontrol) {
 
     // Disable to prevent sending corrupted data to the tag.
     if (command_parity) {
-        Dbprintf("Use of `--par` option with `lf em 4x70 auth` is  non-functional.");
+        DPRINTF_ALWAYS(("Use of `--par` option with `lf em 4x70 auth` is  non-functional."));
         // reply_ng(CMD_LF_EM4X70_WRITE, PM3_ENOTIMPL, NULL, 0);
         // return;
     }
@@ -1556,7 +1575,7 @@ void em4x70_brute(const em4x70_data_t *etd, bool ledcontrol) {
 
     // Disable to prevent sending corrupted data to the tag.
     if (command_parity) {
-        Dbprintf("Use of `--par` option with `lf em 4x70 brute` is  non-functional and may corrupt data on the tag.");
+        DPRINTF_ALWAYS(("Use of `--par` option with `lf em 4x70 brute` is  non-functional and may corrupt data on the tag."));
         // reply_ng(CMD_LF_EM4X70_WRITE, PM3_ENOTIMPL, NULL, 0);
         // return;
     }
@@ -1584,7 +1603,7 @@ void em4x70_write_pin(const em4x70_data_t *etd, bool ledcontrol) {
 
     // Disable to prevent sending corrupted data to the tag.
     if (command_parity) {
-        Dbprintf("Use of `--par` option with `lf em 4x70 setpin` is non-functional and may corrupt data on the tag.");
+        DPRINTF_ALWAYS(("Use of `--par` option with `lf em 4x70 setpin` is non-functional and may corrupt data on the tag."));
         // reply_ng(CMD_LF_EM4X70_WRITE, PM3_ENOTIMPL, NULL, 0);
         // return;
     }
@@ -1633,7 +1652,7 @@ void em4x70_write_key(const em4x70_data_t *etd, bool ledcontrol) {
 
     // Disable to prevent sending corrupted data to the tag.
     if (command_parity) {
-        Dbprintf("Use of `--par` option with `lf em 4x70 setkey` is non-functional and may corrupt data on the tag.");
+        DPRINTF_ALWAYS(("Use of `--par` option with `lf em 4x70 setkey` is non-functional and may corrupt data on the tag."));
         // reply_ng(CMD_LF_EM4X70_WRITE, PM3_ENOTIMPL, NULL, 0);
         // return;
     }
