@@ -995,6 +995,181 @@ static bool create_legacy_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream
 
     return result;
 }
+static bool create_v4070_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_t *out_cmd_bitstream, bool with_command_parity, const uint8_t *rnd, const uint8_t *frnd) {
+    const uint8_t expected_bits_to_send = 95u;
+    bool result = true;
+
+    memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
+    out_cmd_bitstream->command = EM4X70_COMMAND_AUTH;
+
+    em4x70_bitstream_t *s = &out_cmd_bitstream->to_send;
+
+    // Should match decoded valid_auth_3
+
+    // cmd = 0110
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    // N₅₅..N₀ == 
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    // seven bits of 0 (diversity bits)
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    // f(RN)₂₇..f(RN)₀
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 0);
+
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+    result = result && add_bit_to_bitstream(s, 0);
+    result = result && add_bit_to_bitstream(s, 1);
+
+    // uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
+    uint8_t cmd = 0x6u; // HACK - always sent with cmd parity
+    result = result && add_nibble_to_bitstream(s, cmd, false);
+
+    // Reader:     [RM][0][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
+    //
+    // ----> HACK <----- : [ 0 ] == extra bit of zero (!?)
+    // Command is 4 bits : [ 1 ..  4 ]  <---- HACK: Always sent with command parity
+    // N is 56 bits      : [ 5 .. 60 ]
+    // 7 bits of 0       : [61 .. 67 ]
+    // f(RN) is 28 bits  : [68 .. 95 ]
+    // Total bits to send: 96 bits (not the 95 bits that are actually expected)
+
+    // Fills in bits at indexes 5 .. 60
+    for (uint_fast8_t i = 0; i < 7; ++i) {
+        result = result && add_byte_to_bitstream(s, rnd[i]);
+    }
+
+    // Send seven diversity bits ... indexes 61 .. 67
+    for (uint_fast8_t i = 0; i < 7; ++i) {
+        result = result && add_bit_to_bitstream(s, 0);
+    }
+
+    // Send first 24 bit of f(RN) ... indexes 68 .. 91
+    for (uint_fast8_t i = 0; i < 3; ++i) {
+        result = result && add_byte_to_bitstream(s, frnd[i]);
+    }
+    // and send the final 4 bits of f(RN) ... indexes 92 .. 95
+    do {
+        uint8_t nibble = (frnd[3] >> 4u) & 0xFu;
+        result = result && add_nibble_to_bitstream(s, nibble, false);
+    } while (0);
+
+    out_cmd_bitstream->to_receive.bitcount = 20;
+    if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
+        DPRINTF_ERROR(("INTERNAL ERROR: Expected %d bits to be added to send buffer, but only %d bits were added", expected_bits_to_send, out_cmd_bitstream->to_send.bitcount));
+        result = false;
+    }
+
+    return result;
+}
 static bool create_legacy_em4x70_bitstream_for_cmd_pin(em4x70_command_bitstream_t *out_cmd_bitstream, bool with_command_parity, const uint8_t *tag_id, const uint32_t pin) {
     const uint8_t expected_bits_to_send = 68;
     bool result = true;
@@ -1084,7 +1259,7 @@ const em4x70_command_generators_t legacy_em4x70_command_generators = {
     .id    = create_legacy_em4x70_bitstream_for_cmd_id,
     .um1   = create_legacy_em4x70_bitstream_for_cmd_um1,
     .um2   = create_legacy_em4x70_bitstream_for_cmd_um2,
-    .auth  = create_legacy_em4x70_bitstream_for_cmd_auth,
+    .auth  = create_v4070_em4x70_bitstream_for_cmd_auth,
     .pin   = create_legacy_em4x70_bitstream_for_cmd_pin,
     .write = create_legacy_em4x70_bitstream_for_cmd_write
 };
