@@ -999,6 +999,10 @@ static bool create_v4070_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_
     const uint8_t expected_bits_to_send = 95u;
     bool result = true;
 
+    if (!result) {
+        result = create_legacy_em4x70_bitstream_for_cmd_auth(out_cmd_bitstream, with_command_parity, rnd, frnd);
+    }
+
     memset(out_cmd_bitstream, 0, sizeof(em4x70_command_bitstream_t));
     out_cmd_bitstream->command = EM4X70_COMMAND_AUTH;
 
@@ -1128,39 +1132,6 @@ static bool create_v4070_em4x70_bitstream_for_cmd_auth(em4x70_command_bitstream_
     result = result && add_bit_to_bitstream(s, 1);
     result = result && add_bit_to_bitstream(s, 0);
     result = result && add_bit_to_bitstream(s, 1);
-
-    // uint8_t cmd = with_command_parity ? 0x6u : 0x3u;
-    uint8_t cmd = 0x6u; // HACK - always sent with cmd parity
-    result = result && add_nibble_to_bitstream(s, cmd, false);
-
-    // Reader:     [RM][0][Command][N₅₅..N₀][0000000][f(RN)₂₇..f(RN)₀]
-    //
-    // ----> HACK <----- : [ 0 ] == extra bit of zero (!?)
-    // Command is 4 bits : [ 1 ..  4 ]  <---- HACK: Always sent with command parity
-    // N is 56 bits      : [ 5 .. 60 ]
-    // 7 bits of 0       : [61 .. 67 ]
-    // f(RN) is 28 bits  : [68 .. 95 ]
-    // Total bits to send: 96 bits (not the 95 bits that are actually expected)
-
-    // Fills in bits at indexes 5 .. 60
-    for (uint_fast8_t i = 0; i < 7; ++i) {
-        result = result && add_byte_to_bitstream(s, rnd[i]);
-    }
-
-    // Send seven diversity bits ... indexes 61 .. 67
-    for (uint_fast8_t i = 0; i < 7; ++i) {
-        result = result && add_bit_to_bitstream(s, 0);
-    }
-
-    // Send first 24 bit of f(RN) ... indexes 68 .. 91
-    for (uint_fast8_t i = 0; i < 3; ++i) {
-        result = result && add_byte_to_bitstream(s, frnd[i]);
-    }
-    // and send the final 4 bits of f(RN) ... indexes 92 .. 95
-    do {
-        uint8_t nibble = (frnd[3] >> 4u) & 0xFu;
-        result = result && add_nibble_to_bitstream(s, nibble, false);
-    } while (0);
 
     out_cmd_bitstream->to_receive.bitcount = 20;
     if (out_cmd_bitstream->to_send.bitcount != expected_bits_to_send) {
